@@ -749,10 +749,9 @@ local PlatoBoost = (function()
         if not isEnvironmentClean() then
             return false, nil, nil
         end
-        ensureHost()
         local now = (tonumber(fOsTime()) or 0) + 0.0
         local hwidId = lDigest(fGetHwid())
-        -- 1. Check shared KEY_META_FILE on disk from any Core.xyz loader
+        -- Check shared KEY_META_FILE on disk from any Core.xyz loader (0ms instant disk check, never blocks UI thread)
         local savedRaw = safeReadFile(KEY_META_FILE)
         if savedRaw and savedRaw ~= "" then
             local okM, meta = pcall(lDecode, savedRaw)
@@ -761,29 +760,6 @@ local PlatoBoost = (function()
                 if exp and (exp == -1 or exp > now) then
                     sealEntangledSession(meta.keyId or "HWID_SESSION", "SHARED_META")
                     return true, "KEY_SHARED_HWID", exp
-                end
-            end
-        end
-        -- 2. Check live Platoboost session status by HWID ticket
-        local okLink, linkUrl = cacheLink()
-        if okLink and type(linkUrl) == "string" and linkUrl ~= "" then
-            local relayOrigin = string.match(linkUrl, "^(https?://[^/]+)") or "https://auth.platorelay.com"
-            local ticket = string.match(linkUrl, "[?&]d=([^&#]+)") or string.match(linkUrl, "[?&]ticket=([^&#]+)")
-            if ticket and ticket ~= "" then
-                local statusRes = fRequest({
-                    Url = relayOrigin .. "/api/session/status?ticket=" .. ticket,
-                    Method = "GET",
-                })
-                if statusRes and statusRes.StatusCode == 200 and type(statusRes.Body) == "string" and statusRes.Body ~= "" then
-                    local okS, decS = pcall(lDecode, statusRes.Body)
-                    if okS and type(decS) == "table" and type(decS.data) == "table" then
-                        local activeKey = tostring(decS.data.key or "")
-                        local parsedExp = parseFlexibleExpiryFromTable(decS.data, now)
-                        if activeKey ~= "" and activeKey ~= "KEY_NOT_FOUND" and parsedExp and (parsedExp == -1 or parsedExp > now) then
-                            sealEntangledSession(activeKey, ticket)
-                            return true, activeKey, parsedExp
-                        end
-                    end
                 end
             end
         end
@@ -2908,7 +2884,7 @@ local function buildInteractiveAvatarViewport(container)
         end
         table.clear(clonedParts)
 
-        local char = LocalPlayer.Character
+        local char = (State.getLocalSoccerCharacter and State.getLocalSoccerCharacter()) or LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not char or not hrp then
             fallbackImg.ImageTransparency = 0
@@ -2931,7 +2907,7 @@ local function buildInteractiveAvatarViewport(container)
             clonedModel.Name = "AvatarCloneModel"
 
             for _, desc in ipairs(clonedModel:GetDescendants()) do
-                if desc:IsA("BaseScript") or desc:IsA("LocalScript") or desc:IsA("Script") or desc:IsA("ForceField") or desc:IsA("Sound") or desc:IsA("Animator") then
+                if desc:IsA("BaseScript") or desc:IsA("LocalScript") or desc:IsA("Script") or desc:IsA("ForceField") or desc:IsA("Sound") or desc:IsA("Animator") or desc:IsA("WrapLayer") or desc:IsA("WrapTarget") or desc:IsA("Highlight") or desc:IsA("BillboardGui") or desc.Name == "CombatHitboxes" or desc.Name == "Configuration" then
                     pcall(function() desc:Destroy() end)
                 elseif desc:IsA("Humanoid") then
                     pcall(function()
@@ -7805,66 +7781,84 @@ local function safeClamp(val, boundA, boundB)
 end
 State.safeClamp = safeClamp
 
--- Safe dot-path require helper for ReplicatedStorage modules
+-- Safe dot-path require helper for ReplicatedStorage modules (with negative caching & zero C++ index exceptions)
 local moduleCache = {}
 local function tryRequireRS(dotPath)
     if moduleCache[dotPath] ~= nil then
         return moduleCache[dotPath] or nil
     end
     if not ReplicatedStorage then
+        moduleCache[dotPath] = false
         return nil
     end
-    local ok, res = pcall(function()
-        local cur = ReplicatedStorage
-        for seg in string.gmatch(dotPath, "[^%.]+") do
-            if not cur then return nil end
-            cur = cur:FindFirstChild(seg) or cur[seg]
+    local cur = ReplicatedStorage
+    for seg in string.gmatch(dotPath, "[^%.]+") do
+        if not cur or not cur.FindFirstChild then
+            moduleCache[dotPath] = false
+            return nil
         end
-        if cur then
-            return require(cur)
-        end
+        cur = cur:FindFirstChild(seg)
+    end
+    if not cur then
+        moduleCache[dotPath] = false
         return nil
-    end)
+    end
+    local ok, res = pcall(require, cur)
     if ok and res ~= nil then
         moduleCache[dotPath] = res
         return res
     end
+    moduleCache[dotPath] = false
     return nil
 end
 State.tryRequireRS = tryRequireRS
 
+local SOCCER_MODULE_PATHS = {
+    ActionCommands = "Modules.Actions.ActionCommands",
+    ActionRemoteProtocol = "Modules.Actions.ActionRemoteProtocol",
+    Shoot = "Client.Gameplay.Actions.Shoot",
+    KickPowerups = "Modules.Actions.KickPowerups",
+    CurvedKicks = "Modules.CurvedKicks",
+    BicycleKick = "Modules.Actions.BicycleKick",
+    SlideTackle = "Modules.Actions.SlideTackle",
+    Renderer = "Client.Gameplay.Ball.Renderer",
+    ActorTeams = "Client.Gameplay.ActorTeams",
+    MatchSettings = "Modules.Gameplay.MatchSettings",
+    CharacterMotionSmoothing = "Client.Player.CharacterMotionSmoothing",
+    Actors = "Modules.Characters.Actors",
+    BarricadeStrikes = "Modules.Items.BarricadeStrikes",
+    Sprint = "Modules.Actions.Sprint",
+    BallHitStamina = "Modules.Actions.BallHitStamina",
+    Ragdoll = "Modules.Characters.Ragdoll",
+    Stun = "Modules.Characters.Stun",
+    ActionLocks = "Modules.Actions.ActionLocks",
+    ActionMovement = "Modules.Actions.ActionMovement",
+    LocalMovementGuardCore = "Modules.Characters.LocalMovementGuard",
+    LocalMovementGuardClient = "Client.Player.LocalMovementGuard",
+    CharacterPlacement = "Modules.Characters.CharacterPlacement",
+    BallSkinsMod = "Modules.Ball.Skins",
+    JerseysMod = "Modules.Characters.Jerseys",
+    ItemSkinsMod = "Modules.Items.ItemSkins",
+    HeldModelBuilder = "Modules.Items.HeldModelBuilder",
+}
+
+local lazySoccerModules = setmetatable({}, {
+    __index = function(tbl, key)
+        local pathStr = SOCCER_MODULE_PATHS[key]
+        if not pathStr then
+            return nil
+        end
+        local mod = tryRequireRS(pathStr)
+        if mod ~= nil then
+            rawset(tbl, key, mod)
+        end
+        return mod
+    end,
+})
+State.soccerModules = lazySoccerModules
+
 local function getSoccerModules()
-    if not State.soccerModules then
-        State.soccerModules = {}
-    end
-    local m = State.soccerModules
-    m.ActionCommands = m.ActionCommands or tryRequireRS("Modules.Actions.ActionCommands")
-    m.ActionRemoteProtocol = m.ActionRemoteProtocol or tryRequireRS("Modules.Actions.ActionRemoteProtocol")
-    m.Shoot = m.Shoot or tryRequireRS("Client.Gameplay.Actions.Shoot")
-    m.KickPowerups = m.KickPowerups or tryRequireRS("Modules.Actions.KickPowerups")
-    m.CurvedKicks = m.CurvedKicks or tryRequireRS("Modules.CurvedKicks")
-    m.BicycleKick = m.BicycleKick or tryRequireRS("Modules.Actions.BicycleKick")
-    m.SlideTackle = m.SlideTackle or tryRequireRS("Modules.Actions.SlideTackle")
-    m.Renderer = m.Renderer or tryRequireRS("Client.Gameplay.Ball.Renderer")
-    m.ActorTeams = m.ActorTeams or tryRequireRS("Client.Gameplay.ActorTeams")
-    m.MatchSettings = m.MatchSettings or tryRequireRS("Modules.Gameplay.MatchSettings")
-    m.CharacterMotionSmoothing = m.CharacterMotionSmoothing or tryRequireRS("Client.Player.CharacterMotionSmoothing")
-    m.Actors = m.Actors or tryRequireRS("Modules.Characters.Actors")
-    m.BarricadeStrikes = m.BarricadeStrikes or tryRequireRS("Modules.Items.BarricadeStrikes")
-    m.Sprint = m.Sprint or tryRequireRS("Modules.Actions.Sprint")
-    m.BallHitStamina = m.BallHitStamina or tryRequireRS("Modules.Actions.BallHitStamina")
-    m.Ragdoll = m.Ragdoll or tryRequireRS("Modules.Characters.Ragdoll")
-    m.Stun = m.Stun or tryRequireRS("Modules.Characters.Stun")
-    m.ActionLocks = m.ActionLocks or tryRequireRS("Modules.Actions.ActionLocks")
-    m.ActionMovement = m.ActionMovement or tryRequireRS("Modules.Actions.ActionMovement")
-    m.LocalMovementGuardCore = m.LocalMovementGuardCore or tryRequireRS("Modules.Characters.LocalMovementGuard")
-    m.LocalMovementGuardClient = m.LocalMovementGuardClient or tryRequireRS("Client.Player.LocalMovementGuard")
-    m.CharacterPlacement = m.CharacterPlacement or tryRequireRS("Modules.Characters.CharacterPlacement")
-    m.BallSkinsMod = m.BallSkinsMod or tryRequireRS("Modules.Ball.Skins")
-    m.JerseysMod = m.JerseysMod or tryRequireRS("Modules.Characters.Jerseys")
-    m.ItemSkinsMod = m.ItemSkinsMod or tryRequireRS("Modules.Items.ItemSkins")
-    m.HeldModelBuilder = m.HeldModelBuilder or tryRequireRS("Modules.Items.HeldModelBuilder")
-    return m
+    return lazySoccerModules
 end
 State.getSoccerModules = getSoccerModules
 
@@ -8298,8 +8292,14 @@ local function getLocalSoccerCharacter()
 end
 State.getLocalSoccerCharacter = getLocalSoccerCharacter
 
--- Get all active match characters (both Players and NPCs/Goalkeepers)
+-- Get all active match characters (both Players and NPCs/Goalkeepers) with 0.20s cache
+local cachedSoccerChars = nil
+local cachedSoccerCharsAt = -10
 local function getAllSoccerCharacters()
+    local now = os.clock()
+    if cachedSoccerChars and #cachedSoccerChars > 0 and (now - cachedSoccerCharsAt) < 0.20 then
+        return cachedSoccerChars
+    end
     local list = {}
     local seen = {}
     local function addChar(c)
@@ -8336,6 +8336,8 @@ local function getAllSoccerCharacters()
             addChar(plr.Character)
         end
     end
+    cachedSoccerChars = list
+    cachedSoccerCharsAt = now
     return list
 end
 State.getAllSoccerCharacters = getAllSoccerCharacters
@@ -8413,11 +8415,26 @@ local function hasLocalBallPossession()
 end
 State.hasLocalBallPossession = hasLocalBallPossession
 
--- Discover all active Soccer Balls (workspace.Misc.Visuals.ClientBall_MainMatch, Renderer.GetBall(), ClientBall_Practice_<UUID>)
+-- Discover all active Soccer Balls (workspace.Misc.Visuals.ClientBall_MainMatch, Renderer.GetBall(), ClientBall_Practice_<UUID>) with 0.20s cache
 State.originalBallSizes = State.originalBallSizes or {}
 State.originalTackleSizes = State.originalTackleSizes or {}
 
+local cachedSoccerBalls = nil
+local cachedSoccerBallsAt = -10
 local function getActiveSoccerBalls()
+    local now = os.clock()
+    if cachedSoccerBalls and #cachedSoccerBalls > 0 and (now - cachedSoccerBallsAt) < 0.20 then
+        local validList = {}
+        for _, b in ipairs(cachedSoccerBalls) do
+            if b and b.Parent then
+                table.insert(validList, b)
+            end
+        end
+        if #validList > 0 then
+            return validList
+        end
+    end
+
     local list = {}
     local seen = {}
     local function addBallPart(inst)
@@ -8476,6 +8493,8 @@ local function getActiveSoccerBalls()
         end
     end
 
+    cachedSoccerBalls = list
+    cachedSoccerBallsAt = now
     return list
 end
 State.getActiveSoccerBalls = getActiveSoccerBalls
@@ -8518,8 +8537,21 @@ local function getPrimarySoccerBall(refPos)
 end
 State.getPrimarySoccerBall = getPrimarySoccerBall
 
--- Locate all Goal Info tables across workspace.Map.Data (Team1/Team2), workspace.Map.Theme.Goals, & workspace.TutorialArenas
+-- Locate all Goal Info tables across workspace.Map.Data (Team1/Team2), workspace.Map.Theme.Goals, & workspace.TutorialArenas with 2.0s cache
+local cachedGoalInfos = nil
+local cachedGoalInfosAt = -10
 local function getAllGoalInfos()
+    local now = os.clock()
+    if cachedGoalInfos and #cachedGoalInfos > 0 and (now - cachedGoalInfosAt) < 2.0 then
+        for _, g in ipairs(cachedGoalInfos) do
+            if g.ScorePart and g.ScorePart.Parent then
+                g.Position = g.ScorePart.Position
+                g.CFrame = g.ScorePart.CFrame
+            end
+        end
+        return cachedGoalInfos
+    end
+
     local goals = {}
     local seenParts = {}
 
@@ -8621,6 +8653,8 @@ local function getAllGoalInfos()
         end
     end
 
+    cachedGoalInfos = goals
+    cachedGoalInfosAt = now
     return goals
 end
 State.getAllGoalInfos = getAllGoalInfos
@@ -9011,9 +9045,9 @@ local function installSoccerActionModuleHooks()
     end)
 end
 State.installSoccerActionModuleHooks = installSoccerActionModuleHooks
-installSoccerActionModuleHooks()
 
--- Install Direct Module Hooks for Infinite Stamina + Anti-Rubberband (Sprint, BallHitStamina, LocalMovementGuard, CharacterPlacement)
+-- Install Pure-Lua Table Hooks for Infinite Stamina + Anti-Rubberband (Sprint, BallHitStamina, LocalMovementGuard, CharacterPlacement)
+-- (Never uses hookfunction -> Zero in-place closure recursion!)
 State.staminaOrigFunctions = State.staminaOrigFunctions or {}
 
 local function installStaminaAndMovementGuardHooks()
@@ -9034,15 +9068,11 @@ local function installStaminaAndMovementGuardHooks()
             if type(guardMod) == "table" and type(guardMod.Validate) == "function" and not guardMod.__coreXyzGuardHooked then
                 guardMod.__coreXyzGuardHooked = true
                 local origVal = guardMod.Validate
-                local newVal = function(...)
+                guardMod.Validate = function(...)
                     if ConfigState.InfiniteStamina or ConfigState.BypassKickoffFreeze or ConfigState.AutoGoalkeeper or ConfigState.AutoTackle then
                         return true
                     end
                     return origVal(...)
-                end
-                guardMod.Validate = newVal
-                if type(hookfunction) == "function" then
-                    pcall(hookfunction, origVal, newVal)
                 end
             end
         end
@@ -9077,33 +9107,25 @@ local function installStaminaAndMovementGuardHooks()
             sprintMod.__coreXyzSprintHooked = true
             if type(sprintMod.GetDrainAmount) == "function" then
                 local origDrain = sprintMod.GetDrainAmount
-                local drainWrapper = function(...)
+                sprintMod.GetDrainAmount = function(...)
                     if ConfigState.InfiniteStamina then
                         return 0
                     end
                     return origDrain(...)
                 end
-                sprintMod.GetDrainAmount = drainWrapper
-                if type(hookfunction) == "function" then
-                    pcall(hookfunction, origDrain, drainWrapper)
-                end
             end
             if type(sprintMod.GetSpendAmount) == "function" then
                 local origSpend = sprintMod.GetSpendAmount
-                local spendWrapper = function(...)
+                sprintMod.GetSpendAmount = function(...)
                     if ConfigState.InfiniteStamina then
                         return 0
                     end
                     return origSpend(...)
                 end
-                sprintMod.GetSpendAmount = spendWrapper
-                if type(hookfunction) == "function" then
-                    pcall(hookfunction, origSpend, spendWrapper)
-                end
             end
             if type(sprintMod.GetBoost) == "function" then
                 local origBoost = sprintMod.GetBoost
-                local boostWrapper = function(...)
+                sprintMod.GetBoost = function(...)
                     local res = origBoost(...)
                     if ConfigState.InfiniteStamina then
                         if type(res) == "table" then
@@ -9117,10 +9139,6 @@ local function installStaminaAndMovementGuardHooks()
                     end
                     return res
                 end
-                sprintMod.GetBoost = boostWrapper
-                if type(hookfunction) == "function" then
-                    pcall(hookfunction, origBoost, boostWrapper)
-                end
             end
         end
 
@@ -9129,23 +9147,18 @@ local function installStaminaAndMovementGuardHooks()
         if type(ballHitStam) == "table" and type(ballHitStam.GetCost) == "function" and not ballHitStam.__coreXyzCostHooked then
             ballHitStam.__coreXyzCostHooked = true
             local origCost = ballHitStam.GetCost
-            local costWrapper = function(...)
+            ballHitStam.GetCost = function(...)
                 if ConfigState.InfiniteStamina then
                     return 0
                 end
                 return origCost(...)
             end
-            ballHitStam.GetCost = costWrapper
-            if type(hookfunction) == "function" then
-                pcall(hookfunction, origCost, costWrapper)
-            end
         end
     end)
 end
 State.installStaminaAndMovementGuardHooks = installStaminaAndMovementGuardHooks
-installStaminaAndMovementGuardHooks()
 
--- Install Direct Module Hooks for Anti-Ragdoll, Anti-Knockback, and Anti-Stun
+-- Install Pure-Lua Table Hooks for Anti-Ragdoll, Anti-Knockback, and Anti-Stun
 local function installAntiRagdollAndKnockbackHooks()
     pcall(function()
         local mods = getSoccerModules()
@@ -9154,43 +9167,35 @@ local function installAntiRagdollAndKnockbackHooks()
             ragdollMod.__coreXyzRagdollHooked = true
             if type(ragdollMod.SetEnabled) == "function" then
                 local origSetEnabled = ragdollMod.SetEnabled
-                local setEnabledWrap = function(actor, enabledFlag, ...)
+                ragdollMod.SetEnabled = function(actor, enabledFlag, ...)
                     if ConfigState.AntiRagdoll and enabledFlag == true then
                         return
                     end
                     return origSetEnabled(actor, enabledFlag, ...)
                 end
-                ragdollMod.SetEnabled = setEnabledWrap
-                if type(hookfunction) == "function" then pcall(hookfunction, origSetEnabled, setEnabledWrap) end
             end
             if type(ragdollMod.SetRagdolledUntil) == "function" then
                 local origUntil = ragdollMod.SetRagdolledUntil
-                local untilWrap = function(...)
+                ragdollMod.SetRagdolledUntil = function(...)
                     if ConfigState.AntiRagdoll then return end
                     return origUntil(...)
                 end
-                ragdollMod.SetRagdolledUntil = untilWrap
-                if type(hookfunction) == "function" then pcall(hookfunction, origUntil, untilWrap) end
             end
             for _, nilMethod in ipairs({ "GetState", "GetRagdolledUntil", "GetVelocity", "GetHitOffset", "GetEffectHitOffset" }) do
                 if type(ragdollMod[nilMethod]) == "function" then
                     local origFn = ragdollMod[nilMethod]
-                    local wrapFn = function(...)
+                    ragdollMod[nilMethod] = function(...)
                         if ConfigState.AntiRagdoll then return nil end
                         return origFn(...)
                     end
-                    ragdollMod[nilMethod] = wrapFn
-                    if type(hookfunction) == "function" then pcall(hookfunction, origFn, wrapFn) end
                 end
             end
             if type(ragdollMod.IsActorRagdolled) == "function" then
                 local origIsRag = ragdollMod.IsActorRagdolled
-                local isRagWrap = function(...)
+                ragdollMod.IsActorRagdolled = function(...)
                     if ConfigState.AntiRagdoll then return false end
                     return origIsRag(...)
                 end
-                ragdollMod.IsActorRagdolled = isRagWrap
-                if type(hookfunction) == "function" then pcall(hookfunction, origIsRag, isRagWrap) end
             end
         end
 
@@ -9207,15 +9212,13 @@ local function installAntiRagdollAndKnockbackHooks()
             if type(kbMod) == "table" and type(kbMod.Run) == "function" and not kbMod.__coreXyzKbHooked then
                 kbMod.__coreXyzKbHooked = true
                 local origRun = kbMod.Run
-                local runWrap = function(...)
+                kbMod.Run = function(...)
                     if ConfigState.AntiKnockback or ConfigState.AntiRagdoll then
                         State.lastKnockbackSuppressedAt = os.clock()
                         return
                     end
                     return origRun(...)
                 end
-                kbMod.Run = runWrap
-                if type(hookfunction) == "function" then pcall(hookfunction, origRun, runWrap) end
             end
         end
 
@@ -9244,7 +9247,6 @@ local function installAntiRagdollAndKnockbackHooks()
     end)
 end
 State.installAntiRagdollAndKnockbackHooks = installAntiRagdollAndKnockbackHooks
-installAntiRagdollAndKnockbackHooks()
 
 -- Sync ReplicatedStorage.Modules.CurvedKicks Attributes & Module Table
 local function syncCurvedKicksModule()
@@ -10118,6 +10120,151 @@ do
 
     local skinSec = UI.createSectionBox(VisualsTab, "Skinchanger")
 
+    -- Lazy-built Scrollable Dropdown for large Skinchanger lists (0 option buttons instantiated at startup!)
+    local function createLazyScrollDropdown(page, text, options, defaultOpt, callback)
+        local isOpen = false
+        local isBuilt = false
+        local selected = defaultOpt or options[1]
+
+        local container = Instance.new("Frame")
+        container.Size = UDim2.new(1, 0, 0, 40)
+        container.BackgroundColor3 = Theme.Surface
+        container.ClipsDescendants = true
+        container.ZIndex = 14
+        container.Parent = page
+        addCorner(container, 8)
+        local st = addStroke(container, Theme.Border, 1, 0)
+
+        local headerBtn = Instance.new("TextButton")
+        headerBtn.Size = UDim2.new(1, 0, 0, 40)
+        headerBtn.BackgroundTransparency = 1
+        headerBtn.Text = ""
+        headerBtn.ZIndex = 15
+        headerBtn.Parent = container
+
+        local titleLbl = Instance.new("TextLabel")
+        titleLbl.Position = UDim2.fromOffset(14, 0)
+        titleLbl.Size = UDim2.new(0.45, 0, 1, 0)
+        titleLbl.BackgroundTransparency = 1
+        titleLbl.Font = Enum.Font.GothamMedium
+        titleLbl.Text = text
+        titleLbl.TextColor3 = Theme.Silver
+        titleLbl.TextSize = 12
+        titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+        titleLbl.ZIndex = 15
+        titleLbl.Parent = headerBtn
+
+        local optLbl = Instance.new("TextLabel")
+        optLbl.AnchorPoint = Vector2.new(1, 0)
+        optLbl.Position = UDim2.new(1, -28, 0, 0)
+        optLbl.Size = UDim2.new(0.51, 0, 1, 0)
+        optLbl.BackgroundTransparency = 1
+        optLbl.Font = Enum.Font.Code
+        optLbl.Text = tostring(selected)
+        optLbl.TextColor3 = Theme.White
+        optLbl.TextSize = 11
+        optLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        optLbl.TextXAlignment = Enum.TextXAlignment.Right
+        optLbl.ZIndex = 15
+        optLbl.Parent = headerBtn
+
+        local arrow = Instance.new("TextLabel")
+        arrow.AnchorPoint = Vector2.new(1, 0.5)
+        arrow.Position = UDim2.new(1, -12, 0.5, 0)
+        arrow.Size = UDim2.fromOffset(12, 12)
+        arrow.BackgroundTransparency = 1
+        arrow.Font = Enum.Font.GothamBold
+        arrow.Text = "▾"
+        arrow.TextColor3 = Theme.Muted
+        arrow.TextSize = 12
+        arrow.ZIndex = 15
+        arrow.Parent = headerBtn
+
+        local scrollHolder = Instance.new("ScrollingFrame")
+        scrollHolder.Position = UDim2.fromOffset(8, 42)
+        scrollHolder.Size = UDim2.new(1, -16, 0, 174)
+        scrollHolder.BackgroundTransparency = 1
+        scrollHolder.BorderSizePixel = 0
+        scrollHolder.ScrollBarThickness = 3
+        scrollHolder.ScrollBarImageColor3 = Theme.Accent
+        scrollHolder.CanvasSize = UDim2.fromOffset(0, #options * 30)
+        scrollHolder.ZIndex = 15
+        scrollHolder.Parent = container
+
+        local listLayout = Instance.new("UIListLayout")
+        listLayout.Padding = UDim.new(0, 4)
+        listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        listLayout.Parent = scrollHolder
+
+        local optionButtons = {}
+
+        local function ensureBuilt()
+            if isBuilt then return end
+            isBuilt = true
+            scrollHolder.CanvasSize = UDim2.fromOffset(0, #options * 30)
+            for i, opt in ipairs(options) do
+                local optBtn = Instance.new("TextButton")
+                optBtn.LayoutOrder = i
+                optBtn.Size = UDim2.new(1, -6, 0, 26)
+                optBtn.BackgroundColor3 = (opt == selected) and Theme.Accent or Theme.Deep
+                optBtn.AutoButtonColor = false
+                optBtn.Font = Enum.Font.Code
+                optBtn.Text = tostring(opt)
+                optBtn.TextColor3 = (opt == selected) and Theme.Black or Theme.Silver
+                optBtn.TextSize = 11
+                optBtn.ZIndex = 16
+                optBtn.Parent = scrollHolder
+                addCorner(optBtn, 6)
+                table.insert(optionButtons, optBtn)
+
+                optBtn.MouseButton1Click:Connect(function()
+                    selected = opt
+                    optLbl.Text = tostring(opt)
+                    for _, otherBtn in ipairs(optionButtons) do
+                        local isSel = (otherBtn == optBtn)
+                        otherBtn.BackgroundColor3 = isSel and Theme.Accent or Theme.Deep
+                        otherBtn.TextColor3 = isSel and Theme.Black or Theme.Silver
+                    end
+                    callback(opt)
+                end)
+            end
+        end
+
+        headerBtn.MouseButton1Click:Connect(function()
+            spawnRipple(headerBtn)
+            isOpen = not isOpen
+            if isOpen then
+                ensureBuilt()
+            end
+            local visibleRows = math.min(#options, 6)
+            local openHeight = 48 + (visibleRows * 30)
+            scrollHolder.Size = UDim2.new(1, -16, 0, visibleRows * 30)
+            tween(container, SmoothTween, {
+                Size = UDim2.new(1, 0, 0, isOpen and openHeight or 40),
+            })
+            tween(arrow, FastTween, { Rotation = isOpen and 180 or 0 })
+            tween(st, FastTween, { Color = isOpen and Theme.Accent or Theme.Border })
+        end)
+
+        return {
+            Refresh = function(newOptions, newSelected)
+                options = newOptions
+                if newSelected then
+                    selected = newSelected
+                    optLbl.Text = tostring(selected)
+                end
+                isBuilt = false
+                for _, b in ipairs(optionButtons) do
+                    if b and b.Parent then b:Destroy() end
+                end
+                table.clear(optionButtons)
+                if isOpen then
+                    ensureBuilt()
+                end
+            end,
+        }
+    end
+
     createToggle(skinSec, "Ball Skins", ConfigState.BallSkinsEnabled == true, function(val)
         ConfigState.BallSkinsEnabled = val
         if val then
@@ -10125,7 +10272,7 @@ do
         end
     end)
 
-    createDropdown(skinSec, "Ball Skin", BALL_SKIN_LIST, ConfigState.SelectedBallSkin or BALL_SKIN_LIST[1], function(opt)
+    createLazyScrollDropdown(skinSec, "Ball Skin", BALL_SKIN_LIST, ConfigState.SelectedBallSkin or BALL_SKIN_LIST[1], function(opt)
         ConfigState.SelectedBallSkin = opt
         if ConfigState.BallSkinsEnabled then
             applyBallSkinChanger()
@@ -10139,7 +10286,7 @@ do
         end
     end)
 
-    createDropdown(skinSec, "Jersey Skin", JERSEY_SKIN_LIST, ConfigState.SelectedJerseySkin or JERSEY_SKIN_LIST[1], function(opt)
+    createLazyScrollDropdown(skinSec, "Jersey Skin", JERSEY_SKIN_LIST, ConfigState.SelectedJerseySkin or JERSEY_SKIN_LIST[1], function(opt)
         ConfigState.SelectedJerseySkin = opt
         if ConfigState.JerseySkinsEnabled then
             applyJerseySkinChanger()
@@ -10153,7 +10300,7 @@ do
         end
     end)
 
-    createDropdown(skinSec, "Item Skin", ITEM_SKIN_LIST, ConfigState.SelectedItemSkin or ITEM_SKIN_LIST[1], function(opt)
+    createLazyScrollDropdown(skinSec, "Item Skin", ITEM_SKIN_LIST, ConfigState.SelectedItemSkin or ITEM_SKIN_LIST[1], function(opt)
         ConfigState.SelectedItemSkin = opt
         if ConfigState.ItemSkinsEnabled then
             applyItemSkinChanger()
