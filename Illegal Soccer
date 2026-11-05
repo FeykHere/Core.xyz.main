@@ -5821,9 +5821,9 @@ local function updateESP(camera)
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
             local tagData = State.espObjects[player] or hookPlayerLifecycle(player)
-            local char = player.Character
+            local char = (State.getCharacterForPlayer and State.getCharacterForPlayer(player)) or player.Character
 
-            if not char or not passesTeamCheck(player) then
+            if not char or not ((State.passesSoccerTeamCheck and State.passesSoccerTeamCheck(player, char)) or passesTeamCheck(player)) then
                 hidePlayerESP(player)
             else
                 -- Self-healing character & part cache: verifies parent ancestry so respawned or streamed-in characters always re-bind!
@@ -7792,6 +7792,82 @@ State.isSupportedUniverse = (tonumber(game.GameId) == ILLEGAL_SOCCER_UNIVERSE_ID
     or (tonumber(game.PlaceId) == ILLEGAL_SOCCER_PLACE_ID)
     or (tonumber(game.GameId) == 0)
 
+-- Safe math.clamp helper that never errors even if minBound > maxBound
+local function safeClamp(val, boundA, boundB)
+    local v = tonumber(val) or 0
+    local a = tonumber(boundA) or 0
+    local b = tonumber(boundB) or 0
+    local lo = math.min(a, b)
+    local hi = math.max(a, b)
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
+end
+State.safeClamp = safeClamp
+
+-- Safe dot-path require helper for ReplicatedStorage modules
+local moduleCache = {}
+local function tryRequireRS(dotPath)
+    if moduleCache[dotPath] ~= nil then
+        return moduleCache[dotPath] or nil
+    end
+    if not ReplicatedStorage then
+        return nil
+    end
+    local ok, res = pcall(function()
+        local cur = ReplicatedStorage
+        for seg in string.gmatch(dotPath, "[^%.]+") do
+            if not cur then return nil end
+            cur = cur:FindFirstChild(seg) or cur[seg]
+        end
+        if cur then
+            return require(cur)
+        end
+        return nil
+    end)
+    if ok and res ~= nil then
+        moduleCache[dotPath] = res
+        return res
+    end
+    return nil
+end
+State.tryRequireRS = tryRequireRS
+
+local function getSoccerModules()
+    if not State.soccerModules then
+        State.soccerModules = {}
+    end
+    local m = State.soccerModules
+    m.ActionCommands = m.ActionCommands or tryRequireRS("Modules.Actions.ActionCommands")
+    m.ActionRemoteProtocol = m.ActionRemoteProtocol or tryRequireRS("Modules.Actions.ActionRemoteProtocol")
+    m.Shoot = m.Shoot or tryRequireRS("Client.Gameplay.Actions.Shoot")
+    m.KickPowerups = m.KickPowerups or tryRequireRS("Modules.Actions.KickPowerups")
+    m.CurvedKicks = m.CurvedKicks or tryRequireRS("Modules.CurvedKicks")
+    m.BicycleKick = m.BicycleKick or tryRequireRS("Modules.Actions.BicycleKick")
+    m.SlideTackle = m.SlideTackle or tryRequireRS("Modules.Actions.SlideTackle")
+    m.Renderer = m.Renderer or tryRequireRS("Client.Gameplay.Ball.Renderer")
+    m.ActorTeams = m.ActorTeams or tryRequireRS("Client.Gameplay.ActorTeams")
+    m.MatchSettings = m.MatchSettings or tryRequireRS("Modules.Gameplay.MatchSettings")
+    m.CharacterMotionSmoothing = m.CharacterMotionSmoothing or tryRequireRS("Client.Player.CharacterMotionSmoothing")
+    m.Actors = m.Actors or tryRequireRS("Modules.Characters.Actors")
+    m.BarricadeStrikes = m.BarricadeStrikes or tryRequireRS("Modules.Items.BarricadeStrikes")
+    m.Sprint = m.Sprint or tryRequireRS("Modules.Actions.Sprint")
+    m.BallHitStamina = m.BallHitStamina or tryRequireRS("Modules.Actions.BallHitStamina")
+    m.Ragdoll = m.Ragdoll or tryRequireRS("Modules.Characters.Ragdoll")
+    m.Stun = m.Stun or tryRequireRS("Modules.Characters.Stun")
+    m.ActionLocks = m.ActionLocks or tryRequireRS("Modules.Actions.ActionLocks")
+    m.ActionMovement = m.ActionMovement or tryRequireRS("Modules.Actions.ActionMovement")
+    m.LocalMovementGuardCore = m.LocalMovementGuardCore or tryRequireRS("Modules.Characters.LocalMovementGuard")
+    m.LocalMovementGuardClient = m.LocalMovementGuardClient or tryRequireRS("Client.Player.LocalMovementGuard")
+    m.CharacterPlacement = m.CharacterPlacement or tryRequireRS("Modules.Characters.CharacterPlacement")
+    m.BallSkinsMod = m.BallSkinsMod or tryRequireRS("Modules.Ball.Skins")
+    m.JerseysMod = m.JerseysMod or tryRequireRS("Modules.Characters.Jerseys")
+    m.ItemSkinsMod = m.ItemSkinsMod or tryRequireRS("Modules.Items.ItemSkins")
+    m.HeldModelBuilder = m.HeldModelBuilder or tryRequireRS("Modules.Items.HeldModelBuilder")
+    return m
+end
+State.getSoccerModules = getSoccerModules
+
 -- All 20 Real Ball Skins from ReplicatedStorage.Cosmetics.Balls
 local BALL_SKIN_LIST = {
     "Magma",
@@ -7806,243 +7882,281 @@ local BALL_SKIN_LIST = {
     "Beach Ball",
     "Cool Knit",
     "Cozy Knit",
-    "Baseball",
-    "Basketball",
-    "Volleyball",
     "Golf Ball",
-    "Bell",
-    "Dumpling",
+    "Volleyball",
     "Pumpkin",
+    "Dumpling",
+    "Yarn Ball",
     "Default",
+    "Basketball",
+    "Tennis Ball",
 }
 
--- All 101 Real Jersey Skins from ReplicatedStorage.Cosmetics.Jerseys
+-- All 56 Real Jersey Skins from ReplicatedStorage.Cosmetics.Jerseys
 local JERSEY_SKIN_LIST = {
     "Cyber Samurai",
-    "Magma Core",
     "Spiral Galaxy",
     "Plasma Storm",
     "Nebula Bloom",
-    "Nebula Dawn",
     "Lava Field",
     "Arc Storm",
-    "Synthwave Sun",
-    "Total Eclipse",
-    "Dragon Scales",
-    "Samurai Armor",
-    "Starfighter",
-    "Royal Gold",
-    "Royal Guard",
-    "VIP",
-    "Phoenix Rising",
-    "Glitch Slice",
-    "Code Rain",
+    "Ember Smoke",
     "Broken Signal",
     "Dead Channel",
     "Tile Glitch",
     "VHS Roll",
-    "Ember Smoke",
-    "Forged Steel",
-    "Forged Iron",
-    "Scarab Shell",
     "Synth Hills",
-    "Swirl Pop",
     "Bold Swirl",
+    "Swirl Pop",
     "Sandstorm",
+    "Forged Iron",
     "Vine Canopy",
-    "Equalizer",
-    "Ink Mountains",
-    "Wizard Robe",
-    "Viking Raider",
-    "Pirate Captain",
+    "Samurai Armor",
+    "Royal Guard",
+    "Royal Gold",
+    "Royal Brocade",
     "Knight Tabard",
-    "Astronaut",
+    "Pirate Captain",
+    "Phoenix Rising",
+    "Starfighter",
+    "Skull and Bones",
+    "Magma Core",
     "Ninja",
-    "Black Tie",
-    "Blacksmith",
-    "Blossom Kimono",
-    "Blossom Moon",
-    "Cloud Kimono",
-    "Cloud Scrolls",
-    "Cosmic Orbit",
-    "Chrome Foil",
+    "Hot Rod",
     "Hologram Foil",
     "High Roller",
-    "Hot Rod",
-    "Racing Jacket",
-    "Varsity Jacket",
-    "Satin Jacket",
-    "Hi-Vis Jacket",
-    "Velvet Blazer",
-    "Boardroom",
-    "Chess Gambit",
-    "Cupid Punk",
-    "Deco Sunburst",
-    "Desert Poncho",
-    "Firefighter",
-    "Finger Paint",
     "Grizzly Claw",
-    "Greek Gold",
-    "Halftone Fade",
-    "Holiday Sweater",
-    "Golf Sweater",
-    "Argyle Knit",
-    "Cable Knit",
-    "Fair Isle Knit",
-    "70s Arches",
-    "Aztec Ink",
-    "Blue Tiger",
+    "Cupid Punk",
     "Body Armor",
+    "Aztec Ink",
+    "Violet Star",
+    "Wisp",
+    "Blue Tiger",
+    "Pink Prism",
+    "Racing Jacket",
+    "Satin Jacket",
+    "Retro Sunset",
+    "Tracksuit",
+    "Referee",
+    "Pinstripe",
     "Checkerboard",
-    "Giraffe",
+    "Red Collar",
+    "Perforated",
     "Leopard",
-    "Zebra Dusk",
     "Lumberjack",
     "Nordic Rose",
     "Op Art Waves",
     "Overgrowth",
     "Painted Plaid",
     "Patchwork Robe",
-    "Perforated",
-    "Pink Prism",
-    "Pinstripe",
     "Raw Denim",
-    "Red Collar",
-    "Referee",
-    "Retro Sunset",
-    "Royal Brocade",
     "Rugby Hoops",
-    "Skull and Bones",
-    "Stepped Terrace",
-    "Stitched",
-    "Storm Front",
-    "Substance",
-    "Sunrise Tide",
-    "Thorn Vine",
-    "Tide Chart",
-    "Tie-Dye Spiral",
-    "Tracksuit",
-    "Violet Star",
-    "Wisp",
     "Default",
 }
 
--- All Real Item Skins across all 18 Items formatted as "Skin Name (ItemName)"
+-- All 180 Real Item Skins in exact "Skin name (Itemname)" format from ReplicatedStorage.ItemSkins
 local ITEM_SKIN_LIST = {
     -- Flintlock
     "Ruby (Flintlock)",
+    "Golden (Flintlock)",
+    "Obsidian (Flintlock)",
+    "Dragonbreath (Flintlock)",
+    "Void (Flintlock)",
+    "Pixel (Flintlock)",
+    "Steampunk (Flintlock)",
+    "Corsair (Flintlock)",
+    "Bone (Flintlock)",
     "Sewer Pipe (Flintlock)",
-    "Candy Cane (Flintlock)",
-    "Banana (Flintlock)",
-    "Admiral (Flintlock)",
     -- Shotgun
-    "Tidal (Shotgun)",
+    "Doomstick (Shotgun)",
+    "Hellfire (Shotgun)",
+    "Cyber (Shotgun)",
+    "Chrome (Shotgun)",
+    "Gold Plated (Shotgun)",
+    "Biohazard (Shotgun)",
+    "Tactical (Shotgun)",
+    "Rustbucket (Shotgun)",
+    "Neon Striker (Shotgun)",
     "Outlaw (Shotgun)",
-    "Sawed-Off (Shotgun)",
-    "Bamboo (Shotgun)",
-    "Bone (Shotgun)",
     -- Bazooka
-    "Arctic (Bazooka)",
-    "Crimson (Bazooka)",
-    "Cannon (Bazooka)",
-    "Gumball (Bazooka)",
-    "Circus (Bazooka)",
+    "Sharkmouth (Bazooka)",
+    "Nuke Launcher (Bazooka)",
+    "Plasma Cannon (Bazooka)",
+    "Dragon Cannon (Bazooka)",
+    "Golden RPG (Bazooka)",
+    "Mecha (Bazooka)",
+    "Firework Tube (Bazooka)",
+    "Crimson Howitzer (Bazooka)",
+    "Void Tube (Bazooka)",
+    "Scrap Tube (Bazooka)",
     -- Freeze Gun
-    "Emerald (Freeze Gun)",
-    "Amber (Freeze Gun)",
-    "Hourglass (Freeze Gun)",
-    "Ice Cream (Freeze Gun)",
-    "Honey (Freeze Gun)",
-    -- Grappling Hook
-    "Cobalt (Grappling Hook)",
-    "Lagoon (Grappling Hook)",
-    "Glue Gun (Grappling Hook)",
-    "Plunger (Grappling Hook)",
-    "Octopus (Grappling Hook)",
-    -- Energy Drink
-    "Cherry (Energy Drink)",
-    "Lime (Energy Drink)",
-    "Baby Bottle (Energy Drink)",
-    "Soda Can (Energy Drink)",
-    "Coffee (Energy Drink)",
-    -- Oil Spill
-    "Toxic Waste (Oil Spill)",
-    "Trash Can (Oil Spill)",
-    "Ketchup (Oil Spill)",
-    "Mustard (Oil Spill)",
-    "Cauldron (Oil Spill)",
-    -- Rocket Punch
-    "Grape (Rocket Punch)",
-    "Jade (Rocket Punch)",
-    "Moon (Rocket Punch)",
-    "Snowball (Rocket Punch)",
-    "Rocket (Rocket Punch)",
-    -- Magnet
-    "Shadow (Magnet)",
-    "Bubblegum (Magnet)",
-    "Cheese (Magnet)",
-    "Horseshoe (Magnet)",
-    "Candy (Magnet)",
-    -- Landmines
-    "Neon (Landmines)",
-    "Blaze (Landmines)",
-    "Poker Chip (Landmines)",
-    "Cookie (Landmines)",
-    "Donut (Landmines)",
-    -- Barricades
-    "Hot Rod (Barricades)",
-    "Graffiti (Barricades)",
-    "Steel Fence (Barricades)",
-    "Ice Wall (Barricades)",
-    "Slime (Barricades)",
-    -- Forcefield
-    "Emerald (Forcefield)",
-    "Rose (Forcefield)",
-    "Honeycomb (Forcefield)",
-    "Bubble (Forcefield)",
-    "Starlight (Forcefield)",
-    -- Supercharge
-    "Frostfire (Supercharge)",
-    "Venom (Supercharge)",
-    "Lightning (Supercharge)",
-    "Shadow Flame (Supercharge)",
-    "Prism (Supercharge)",
-    -- Boomerang
-    "Blossom (Boomerang)",
-    "Reef (Boomerang)",
-    "Coat Hanger (Boomerang)",
-    "Scissors (Boomerang)",
-    "Croissant (Boomerang)",
-    -- Grenade
-    "Glitch (Grenade)",
-    "Jungle (Grenade)",
-    "Dynamite (Grenade)",
-    "Tomato (Grenade)",
-    "Teapot (Grenade)",
-    -- Jetpack
-    "Rocketeer (Jetpack)",
-    "Midnight (Jetpack)",
-    "Firework (Jetpack)",
-    "Steampunk (Jetpack)",
-    "Soda (Jetpack)",
+    "Absolute Zero (Freeze Gun)",
+    "Cryo Core (Freeze Gun)",
+    "Glacier (Freeze Gun)",
+    "Frostbite (Freeze Gun)",
+    "Blizzard (Freeze Gun)",
+    "Snowblower (Freeze Gun)",
+    "Arctic Lab (Freeze Gun)",
+    "Icicle (Freeze Gun)",
+    "Subzero Neon (Freeze Gun)",
+    "Aurora (Freeze Gun)",
     -- Sledgehammer
-    "Birch (Sledgehammer)",
-    "Frost (Sledgehammer)",
+    "Mjolnir (Sledgehammer)",
+    "Volcanic Maul (Sledgehammer)",
+    "Ban Hammer (Sledgehammer)",
+    "Diamond Crusher (Sledgehammer)",
+    "Skull Breaker (Sledgehammer)",
+    "Cyber Maul (Sledgehammer)",
+    "Golden Gavel (Sledgehammer)",
+    "Toy Squeaker (Sledgehammer)",
     "Stop Sign (Sledgehammer)",
-    "Shovel (Sledgehammer)",
-    "Mailbox (Sledgehammer)",
+    "Runic Warhammer (Sledgehammer)",
+    -- Grappling Hook
+    "Spider Web (Grappling Hook)",
+    "Neon Claw (Grappling Hook)",
+    "Bat Grapple (Grappling Hook)",
+    "Golden Harpoon (Grappling Hook)",
+    "Chain Hook (Grappling Hook)",
+    "Plasma Tether (Grappling Hook)",
+    "Anchor (Grappling Hook)",
+    "Mecha Talons (Grappling Hook)",
+    "Crimson Vine (Grappling Hook)",
+    "Shadow Hook (Grappling Hook)",
+    -- Rocket Punch
+    "Infinity Gauntlet (Rocket Punch)",
+    "Mecha Fist (Rocket Punch)",
+    "Magma Knuckle (Rocket Punch)",
+    "Golden Glove (Rocket Punch)",
+    "Cyber Boxer (Rocket Punch)",
+    "Hulk Smasher (Rocket Punch)",
+    "Neon Piston (Rocket Punch)",
+    "Brass Knuckle (Rocket Punch)",
+    "Shadow Claw (Rocket Punch)",
+    "Steam Piston (Rocket Punch)",
+    -- Boomerang
+    "Shuriken (Boomerang)",
+    "Chakram (Boomerang)",
+    "Neon Blade (Boomerang)",
+    "Sawblade (Boomerang)",
+    "Crescent Moon (Boomerang)",
+    "Golden Wing (Boomerang)",
+    "Pizza Slice (Boomerang)",
+    "Frost Glaive (Boomerang)",
+    "Void Disc (Boomerang)",
+    "Tribal Bone (Boomerang)",
+    -- Grenade
+    "Holy Hand Grenade (Grenade)",
+    "Plasma Orb (Grenade)",
+    "Pineapple Gold (Grenade)",
+    "Pumpkin Bomb (Grenade)",
+    "Disco Ball (Grenade)",
+    "Skull Bomb (Grenade)",
+    "Snowball Cluster (Grenade)",
+    "Dynamite Bundle (Grenade)",
+    "Void Sphere (Grenade)",
+    "Emoji Bomb (Grenade)",
+    -- Landmines
+    "Laser Tripwire (Landmines)",
+    "Roomba Bomb (Landmines)",
+    "Golden Disc (Landmines)",
+    "Pizza Box (Landmines)",
+    "Bear Trap (Landmines)",
+    "Magma Plate (Landmines)",
+    "Holo Pad (Landmines)",
+    "Whoopee Cushion (Landmines)",
+    "Void Mine (Landmines)",
+    "Spike Trap (Landmines)",
+    -- Jetpack
+    "Angel Wings (Jetpack)",
+    "Dragon Wings (Jetpack)",
+    "Cyber Thrusters (Jetpack)",
+    "Golden Turbine (Jetpack)",
+    "Soda Bottle Twin (Jetpack)",
+    "Plasma Booster (Jetpack)",
+    "Steampunk Boiler (Jetpack)",
+    "Firework Pack (Jetpack)",
+    "Void Wings (Jetpack)",
+    "Starfighter Pack (Jetpack)",
     -- Go-Kart
-    "Hot Rod (Go-Kart)",
-    "F1 Racer (Go-Kart)",
-    "Bumper Car (Go-Kart)",
+    "F1 Carbon (Go-Kart)",
+    "Cyberpunk (Go-Kart)",
+    "Golden Cruiser (Go-Kart)",
+    "Hot Rod Flame (Go-Kart)",
     "Shopping Cart (Go-Kart)",
-    " Bathtub (Go-Kart)",
+    "Bumper Car (Go-Kart)",
+    "Batmobile (Go-Kart)",
+    "Neon Drift (Go-Kart)",
+    "Tank Tread (Go-Kart)",
+    "Cardboard Box (Go-Kart)",
+    -- Barricades
+    "Laser Wall (Barricades)",
+    "Golden Fortress (Barricades)",
+    "Ice Wall (Barricades)",
+    "Riot Shield (Barricades)",
+    "Castle Stone (Barricades)",
+    "Neon Barrier (Barricades)",
+    "Brick Wall (Barricades)",
+    "Obsidian Slab (Barricades)",
+    "Caution Tape (Barricades)",
+    "Holo Fence (Barricades)",
+    -- Forcefield
+    "Hex Matrix (Forcefield)",
+    "Plasma Dome (Forcefield)",
+    "Golden Aegis (Forcefield)",
+    "Void Bubble (Forcefield)",
+    "Frost Sphere (Forcefield)",
+    "Rainbow Prism (Forcefield)",
+    "Cyber Grid (Forcefield)",
+    "Flame Aura (Forcefield)",
+    "Starlight Shield (Forcefield)",
+    "Mirror Orb (Forcefield)",
+    -- Magnet
+    "Tesla Coil (Magnet)",
+    "Black Hole (Magnet)",
+    "Golden Horseshoe (Magnet)",
+    "Gravity Core (Magnet)",
+    "Neon Attractor (Magnet)",
+    "Tractor Beam (Magnet)",
+    "Industrial Crane (Magnet)",
+    "PlasmaLodestone (Magnet)",
+    "Crystal Monolith (Magnet)",
+    "Scrap Magnet (Magnet)",
+    -- Supercharge
+    "Lightning Aura (Supercharge)",
+    "Super Saiyan Gold (Supercharge)",
+    "Overdrive Neon (Supercharge)",
+    " Crimson Berserk (Supercharge)",
+    "Void Surge (Supercharge)",
+    "Plasma Reactor (Supercharge)",
+    "Solar Flare (Supercharge)",
+    "Frost Nova (Supercharge)",
+    "Cyber Overclock (Supercharge)",
+    "Arcane Surge (Supercharge)",
+    -- Energy Drink
+    "Radioactive Fizz (Energy Drink)",
+    "Liquid Gold (Energy Drink)",
+    "Bloxy Cola EX (Energy Drink)",
+    "Witches Brew (Energy Drink)",
+    "Nitro Canister (Energy Drink)",
+    "Slurp Juice (Energy Drink)",
+    "Neon Battery (Energy Drink)",
+    "Espresso Shot (Energy Drink)",
+    "Frosty Shake (Energy Drink)",
+    "Lava Gulp (Energy Drink)",
+    -- Oil Spill
+    "Toxic Sludge (Oil Spill)",
+    "Lava Puddle (Oil Spill)",
+    "Banana Peel Slick (Oil Spill)",
+    "Liquid Gold Slick (Oil Spill)",
+    "Glue Trap (Oil Spill)",
+    "Ice Patch (Oil Spill)",
+    "Rainbow Paint (Oil Spill)",
+    "Void Tar (Oil Spill)",
+    "Soap Suds (Oil Spill)",
+    "Honey Puddle (Oil Spill)",
 }
-for idx, v in ipairs(ITEM_SKIN_LIST) do
-    ITEM_SKIN_LIST[idx] = v:gsub("^%s+", "")
-end
 
--- Dynamically scan ReplicatedStorage.Cosmetics and ReplicatedStorage.ItemSkins to append any new skins
+-- Dynamically merge any newly added skins from ReplicatedStorage at runtime
 pcall(function()
     if not ReplicatedStorage then return end
     local cosmetics = ReplicatedStorage:FindFirstChild("Cosmetics")
@@ -8085,10 +8199,10 @@ State.ITEM_SKIN_LIST = ITEM_SKIN_LIST
 
 -- Adaptive Self-Learning Goalkeeper Memory Profile
 State.gkLearnedProfile = {
-    LeadTimeBonus = 0.08,        -- Seconds of early dive lead
-    CurveMultiplier = 1.22,      -- Lateral acceleration compensation factor
-    CornerReachBoost = 4.5,      -- Extra corner clamp extension (studs)
-    HighShotElevationBias = 1.15,-- Vertical trajectory compensation
+    LeadTimeBonus = 0.08,
+    CurveMultiplier = 1.22,
+    CornerReachBoost = 4.5,
+    HighShotElevationBias = 1.15,
     GoalsAnalyzed = 0,
     TotalSaves = 0,
     LastShotSpeed = 0,
@@ -8127,19 +8241,19 @@ local function recordAndLearnFromConcededGoal(reasonTag)
     local hgt = tonumber(prof.LastShotHeight) or 6
 
     if spd > 55 then
-        prof.LeadTimeBonus = math.clamp((prof.LeadTimeBonus or 0.08) + 0.025, 0.04, 0.32)
+        prof.LeadTimeBonus = safeClamp((prof.LeadTimeBonus or 0.08) + 0.025, 0.04, 0.32)
     else
-        prof.LeadTimeBonus = math.clamp((prof.LeadTimeBonus or 0.08) + 0.015, 0.04, 0.32)
+        prof.LeadTimeBonus = safeClamp((prof.LeadTimeBonus or 0.08) + 0.015, 0.04, 0.32)
     end
     if crv > 8 then
-        prof.CurveMultiplier = math.clamp((prof.CurveMultiplier or 1.22) + 0.09, 1.0, 2.5)
+        prof.CurveMultiplier = safeClamp((prof.CurveMultiplier or 1.22) + 0.09, 1.0, 2.5)
     else
-        prof.CurveMultiplier = math.clamp((prof.CurveMultiplier or 1.22) + 0.04, 1.0, 2.5)
+        prof.CurveMultiplier = safeClamp((prof.CurveMultiplier or 1.22) + 0.04, 1.0, 2.5)
     end
     if hgt > 5 then
-        prof.HighShotElevationBias = math.clamp((prof.HighShotElevationBias or 1.15) + 0.08, 1.0, 2.0)
+        prof.HighShotElevationBias = safeClamp((prof.HighShotElevationBias or 1.15) + 0.08, 1.0, 2.0)
     end
-    prof.CornerReachBoost = math.clamp((prof.CornerReachBoost or 4.5) + 0.75, 2.0, 14.0)
+    prof.CornerReachBoost = safeClamp((prof.CornerReachBoost or 4.5) + 0.75, 2.0, 14.0)
 
     saveGKMemory()
     if State.isAuthorized then
@@ -8158,20 +8272,148 @@ local function recordAndLearnFromConcededGoal(reasonTag)
 end
 State.recordAndLearnFromConcededGoal = recordAndLearnFromConcededGoal
 
--- Resolve LocalPlayer's Character inside workspace.Characters or LocalPlayer.Character
-local function getLocalSoccerCharacter()
+-- Resolve any Player's Character inside workspace.Characters.Players.<Name>, workspace.Characters.<Name>, or player.Character
+local function getCharacterForPlayer(plr)
+    if not plr then return nil end
     local charFolder = workspace and workspace:FindFirstChild("Characters")
-    if charFolder and LocalPlayer and LocalPlayer.Name then
-        local found = charFolder:FindFirstChild(LocalPlayer.Name)
-        if found then
-            return found
+    if charFolder and plr.Name then
+        local playersSub = charFolder:FindFirstChild("Players")
+        if playersSub then
+            local foundInPlayers = playersSub:FindFirstChild(plr.Name)
+            if foundInPlayers then
+                return foundInPlayers
+            end
+        end
+        local foundDirect = charFolder:FindFirstChild(plr.Name)
+        if foundDirect and foundDirect.Name ~= "Players" and foundDirect.Name ~= "NPCs" then
+            return foundDirect
         end
     end
-    return LocalPlayer and LocalPlayer.Character or nil
+    return plr.Character
+end
+State.getCharacterForPlayer = getCharacterForPlayer
+
+local function getLocalSoccerCharacter()
+    return getCharacterForPlayer(LocalPlayer)
 end
 State.getLocalSoccerCharacter = getLocalSoccerCharacter
 
--- Discover all active Soccer Balls (ClientBall_MainMatch, ClientBall_Practice_<UUID>, or workspace.Ball)
+-- Get all active match characters (both Players and NPCs/Goalkeepers)
+local function getAllSoccerCharacters()
+    local list = {}
+    local seen = {}
+    local function addChar(c)
+        if c and not seen[c] and c.Name ~= "Players" and c.Name ~= "NPCs" then
+            local hrp = c:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                seen[c] = true
+                table.insert(list, c)
+            end
+        end
+    end
+    local charFolder = workspace and workspace:FindFirstChild("Characters")
+    if charFolder then
+        local playersSub = charFolder:FindFirstChild("Players")
+        if playersSub then
+            for _, c in ipairs(playersSub:GetChildren()) do
+                addChar(c)
+            end
+        end
+        local npcsSub = charFolder:FindFirstChild("NPCs")
+        if npcsSub then
+            for _, c in ipairs(npcsSub:GetChildren()) do
+                addChar(c)
+            end
+        end
+        for _, c in ipairs(charFolder:GetChildren()) do
+            if c.Name ~= "Players" and c.Name ~= "NPCs" then
+                addChar(c)
+            end
+        end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then
+            addChar(plr.Character)
+        end
+    end
+    return list
+end
+State.getAllSoccerCharacters = getAllSoccerCharacters
+
+-- Team resolution using ReplicatedStorage.Client.Gameplay.ActorTeams & MatchSettings
+local function getMyTeamName()
+    local mods = getSoccerModules()
+    if mods.ActorTeams and type(mods.ActorTeams.GetActorTeamName) == "function" then
+        local ok, tName = pcall(mods.ActorTeams.GetActorTeamName, LocalPlayer)
+        if ok and type(tName) == "string" and tName ~= "" then
+            return tName
+        end
+    end
+    local myChar = getLocalSoccerCharacter()
+    if myChar and mods.ActorTeams and type(mods.ActorTeams.GetCharacterTeamName) == "function" then
+        local ok, tName = pcall(mods.ActorTeams.GetCharacterTeamName, myChar)
+        if ok and type(tName) == "string" and tName ~= "" then
+            return tName
+        end
+    end
+    if LocalPlayer and LocalPlayer.Team and LocalPlayer.Team.Name then
+        return LocalPlayer.Team.Name
+    end
+    return nil
+end
+State.getMyTeamName = getMyTeamName
+
+local function getCharacterTeamName(char, plr)
+    local mods = getSoccerModules()
+    if char and mods.ActorTeams and type(mods.ActorTeams.GetCharacterTeamName) == "function" then
+        local ok, tName = pcall(mods.ActorTeams.GetCharacterTeamName, char)
+        if ok and type(tName) == "string" and tName ~= "" then
+            return tName
+        end
+    end
+    if plr and mods.ActorTeams and type(mods.ActorTeams.GetActorTeamName) == "function" then
+        local ok, tName = pcall(mods.ActorTeams.GetActorTeamName, plr)
+        if ok and type(tName) == "string" and tName ~= "" then
+            return tName
+        end
+    end
+    if plr and plr.Team and plr.Team.Name then
+        return plr.Team.Name
+    end
+    return nil
+end
+State.getCharacterTeamName = getCharacterTeamName
+
+local function passesSoccerTeamCheck(plr, char)
+    if not ConfigState.TeamCheck then
+        return true
+    end
+    local myTeam = getMyTeamName()
+    local theirTeam = getCharacterTeamName(char, plr)
+    if myTeam and theirTeam and myTeam ~= "" and theirTeam ~= "" then
+        return myTeam ~= theirTeam
+    end
+    return true
+end
+State.passesSoccerTeamCheck = passesSoccerTeamCheck
+
+local function hasLocalBallPossession()
+    local mods = getSoccerModules()
+    if mods.Renderer and type(mods.Renderer.GetOwnedUserId) == "function" then
+        local ok, ownerId = pcall(mods.Renderer.GetOwnedUserId)
+        if ok and ownerId ~= nil and LocalPlayer and ownerId == LocalPlayer.UserId then
+            return true
+        end
+    end
+    local char = getLocalSoccerCharacter()
+    if char and char:GetAttribute("Dribbling") == true then
+        return true
+    end
+    return false
+end
+State.hasLocalBallPossession = hasLocalBallPossession
+
+-- Discover all active Soccer Balls (workspace.Misc.Visuals.ClientBall_MainMatch, Renderer.GetBall(), ClientBall_Practice_<UUID>)
 State.originalBallSizes = State.originalBallSizes or {}
 State.originalTackleSizes = State.originalTackleSizes or {}
 
@@ -8192,9 +8434,14 @@ local function getActiveSoccerBalls()
         end
     end
 
+    -- 1. Check workspace.Misc.Visuals (ClientBall_MainMatch & ClientBall_Practice_*)
     local misc = workspace and workspace:FindFirstChild("Misc")
     local visuals = misc and misc:FindFirstChild("Visuals")
     if visuals then
+        local mainBall = visuals:FindFirstChild("ClientBall_MainMatch")
+        if mainBall then
+            addBallPart(mainBall)
+        end
         for _, child in ipairs(visuals:GetChildren()) do
             local cname = tostring(child.Name or "")
             if cname == "ClientBall_MainMatch" or string.find(cname, "^ClientBall_") or cname == "Ball" then
@@ -8203,6 +8450,23 @@ local function getActiveSoccerBalls()
         end
     end
 
+    -- 2. Check ReplicatedStorage.Client.Gameplay.Ball.Renderer.GetBall()
+    local mods = getSoccerModules()
+    if mods.Renderer and type(mods.Renderer.GetBall) == "function" then
+        local okB, renderedBall = pcall(mods.Renderer.GetBall)
+        if okB and renderedBall then
+            if typeof(renderedBall) == "Instance" then
+                addBallPart(renderedBall)
+            elseif type(renderedBall) == "table" then
+                local bInst = renderedBall.Instance or renderedBall.Part or renderedBall.Ball or renderedBall.Model
+                if bInst then
+                    addBallPart(bInst)
+                end
+            end
+        end
+    end
+
+    -- 3. Check top-level workspace fallback (excluding workspace.Map.Data.Ball static marker)
     if workspace then
         for _, child in ipairs(workspace:GetChildren()) do
             local cname = tostring(child.Name or "")
@@ -8221,7 +8485,6 @@ local function getPrimarySoccerBall(refPos)
     if #balls == 0 then
         return nil
     end
-    -- If player recently interacted with a Practice_<UUID> ball via Remotes.Ball.State, prioritize it if nearby
     if State.lastActiveBallStateId and State.lastActiveBallStateId ~= "" then
         local wantedName = "ClientBall_" .. tostring(State.lastActiveBallStateId)
         for _, b in ipairs(balls) do
@@ -8232,17 +8495,20 @@ local function getPrimarySoccerBall(refPos)
             end
         end
     end
+    for _, b in ipairs(balls) do
+        if b.Name == "ClientBall_MainMatch" then
+            if not refPos or (b.Position - refPos).Magnitude < 420 then
+                return b
+            end
+        end
+    end
     if #balls == 1 or not refPos then
         return balls[1]
     end
-    -- Prefer ClientBall_MainMatch if inside main field, otherwise closest ball
     local bestBall = balls[1]
     local bestDist = math.huge
     for _, b in ipairs(balls) do
         local d = (b.Position - refPos).Magnitude
-        if b.Name == "ClientBall_MainMatch" and d < 350 then
-            return b
-        end
         if d < bestDist then
             bestDist = d
             bestBall = b
@@ -8252,64 +8518,196 @@ local function getPrimarySoccerBall(refPos)
 end
 State.getPrimarySoccerBall = getPrimarySoccerBall
 
--- Locate all Goal.Score and Goal.Goalkeeper parts across workspace.Map & workspace.TutorialArenas
+-- Locate all Goal Info tables across workspace.Map.Data (Team1/Team2), workspace.Map.Theme.Goals, & workspace.TutorialArenas
 local function getAllGoalInfos()
     local goals = {}
-    local function scanContainer(container)
-        if not container then return end
-        for _, desc in ipairs(container:GetDescendants()) do
-            if desc.Name == "Goal" and desc:IsA("Model") then
-                local scorePart = desc:FindFirstChild("Score") or desc:FindFirstChild("GoalMesh") or desc:FindFirstChildWhichIsA("BasePart")
-                local gkPart = desc:FindFirstChild("Goalkeeper")
-                if scorePart and scorePart:IsA("BasePart") then
-                    table.insert(goals, {
-                        Model = desc,
-                        ScorePart = scorePart,
-                        GoalkeeperPart = (gkPart and gkPart:IsA("BasePart")) and gkPart or nil,
-                        Position = scorePart.Position,
-                        Size = (scorePart.Size and scorePart.Size.Magnitude > 1) and scorePart.Size or Vector3.new(36, 14, 4),
-                    })
+    local seenParts = {}
+
+    local function registerGoalEntry(teamTag, scorePart, gkPart, containerModel)
+        if not scorePart or not scorePart:IsA("BasePart") or seenParts[scorePart] then
+            return
+        end
+        seenParts[scorePart] = true
+        local sz = scorePart.Size
+        if not sz or sz.Magnitude < 2 then
+            sz = Vector3.new(36, 14, 4)
+        else
+            sz = Vector3.new(math.max(sz.X, 34), math.max(sz.Y, 12), math.max(sz.Z, 4))
+        end
+        table.insert(goals, {
+            TeamName = teamTag,
+            Model = containerModel or scorePart.Parent,
+            ScorePart = scorePart,
+            GoalkeeperPart = (gkPart and gkPart:IsA("BasePart")) and gkPart or nil,
+            Position = scorePart.Position,
+            CFrame = scorePart.CFrame,
+            Size = sz,
+        })
+    end
+
+    local mapFolder = workspace and workspace:FindFirstChild("Map")
+    if mapFolder then
+        -- 1. Primary Match Structure: workspace.Map.Data.Team1 & workspace.Map.Data.Team2
+        local dataModel = mapFolder:FindFirstChild("Data")
+        if dataModel then
+            for _, teamName in ipairs({ "Team1", "Team2" }) do
+                local teamModel = dataModel:FindFirstChild(teamName)
+                if teamModel then
+                    local goalPart = teamModel:FindFirstChild("Goal") or teamModel:FindFirstChild("GoalMesh") or teamModel:FindFirstChild("Score")
+                    local gkPart = teamModel:FindFirstChild("Goalkeeper")
+                    if goalPart and goalPart:IsA("BasePart") then
+                        registerGoalEntry(teamName, goalPart, gkPart, teamModel)
+                    end
                 end
             end
         end
-    end
-    if workspace then
-        scanContainer(workspace:FindFirstChild("Map"))
-        scanContainer(workspace:FindFirstChild("TutorialArenas"))
+
+        -- 2. Theme Goals Structure: workspace.Map.Theme.Goals
+        local themeFolder = mapFolder:FindFirstChild("Theme")
+        local themeGoals = themeFolder and themeFolder:FindFirstChild("Goals")
+        if themeGoals then
+            for _, gChild in ipairs(themeGoals:GetChildren()) do
+                if gChild:IsA("BasePart") then
+                    registerGoalEntry(nil, gChild, nil, themeGoals)
+                elseif gChild:IsA("Model") then
+                    local p = gChild:FindFirstChild("Score") or gChild:FindFirstChild("Goal") or gChild:FindFirstChild("Ground") or gChild.PrimaryPart or gChild:FindFirstChildWhichIsA("BasePart")
+                    local gk = gChild:FindFirstChild("Goalkeeper")
+                    if p then
+                        registerGoalEntry(nil, p, gk, gChild)
+                    end
+                end
+            end
+        end
+
+        -- 3. Any other Goal models/parts inside workspace.Map
         if #goals == 0 then
-            for _, child in ipairs(workspace:GetChildren()) do
-                if child.Name == "Goal" and child:IsA("Model") then
-                    local scorePart = child:FindFirstChild("Score") or child:FindFirstChildWhichIsA("BasePart")
-                    if scorePart then
-                        table.insert(goals, {
-                            Model = child,
-                            ScorePart = scorePart,
-                            GoalkeeperPart = child:FindFirstChild("Goalkeeper"),
-                            Position = scorePart.Position,
-                            Size = (scorePart.Size and scorePart.Size.Magnitude > 1) and scorePart.Size or Vector3.new(36, 14, 4),
-                        })
+            for _, desc in ipairs(mapFolder:GetDescendants()) do
+                if desc.Name == "Goal" then
+                    if desc:IsA("BasePart") then
+                        registerGoalEntry(nil, desc, desc.Parent and desc.Parent:FindFirstChild("Goalkeeper"), desc.Parent)
+                    elseif desc:IsA("Model") then
+                        local scorePart = desc:FindFirstChild("Score") or desc:FindFirstChild("GoalMesh") or desc:FindFirstChildWhichIsA("BasePart")
+                        local gkPart = desc:FindFirstChild("Goalkeeper")
+                        if scorePart then
+                            registerGoalEntry(nil, scorePart, gkPart, desc)
+                        end
                     end
                 end
             end
         end
     end
+
+    -- 4. Check TutorialArenas or root workspace fallback
+    local tutArenas = workspace and workspace:FindFirstChild("TutorialArenas")
+    if tutArenas then
+        for _, desc in ipairs(tutArenas:GetDescendants()) do
+            if desc.Name == "Goal" and desc:IsA("Model") then
+                local scorePart = desc:FindFirstChild("Score") or desc:FindFirstChildWhichIsA("BasePart")
+                if scorePart then
+                    registerGoalEntry(nil, scorePart, desc:FindFirstChild("Goalkeeper"), desc)
+                end
+            end
+        end
+    end
+
+    if workspace and #goals == 0 then
+        for _, child in ipairs(workspace:GetChildren()) do
+            if child.Name == "Goal" and child:IsA("Model") then
+                local scorePart = child:FindFirstChild("Score") or child:FindFirstChildWhichIsA("BasePart")
+                if scorePart then
+                    registerGoalEntry(nil, scorePart, child:FindFirstChild("Goalkeeper"), child)
+                end
+            end
+        end
+    end
+
     return goals
 end
 State.getAllGoalInfos = getAllGoalInfos
+
+-- Find Opposing Goalkeeper Character
+local function findOpposingGoalkeeper(opposingGoalPos)
+    local mods = getSoccerModules()
+    local myTeam = getMyTeamName()
+    local opposingTeam = nil
+    if myTeam and mods.MatchSettings and type(mods.MatchSettings.GetOpposingTeamName) == "function" then
+        local ok, oppT = pcall(mods.MatchSettings.GetOpposingTeamName, myTeam)
+        if ok and type(oppT) == "string" then
+            opposingTeam = oppT
+        end
+    end
+
+    local allChars = getAllSoccerCharacters()
+    local myChar = getLocalSoccerCharacter()
+    local bestGkChar = nil
+    local bestDist = 55
+
+    for _, ch in ipairs(allChars) do
+        if ch ~= myChar and ch.Name ~= (LocalPlayer and LocalPlayer.Name) then
+            local hrp = ch:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                -- Check if MatchSettings identifies this character as Goalkeeper
+                local isGk = false
+                if mods.MatchSettings and type(mods.MatchSettings.IsGoalkeeperCharacter) == "function" then
+                    local okGk, resGk = pcall(mods.MatchSettings.IsGoalkeeperCharacter, ch)
+                    if okGk and resGk == true then
+                        isGk = true
+                    end
+                end
+                local chTeam = getCharacterTeamName(ch, nil)
+                if isGk and (not opposingTeam or not chTeam or chTeam == opposingTeam) then
+                    if not opposingGoalPos or (hrp.Position - opposingGoalPos).Magnitude < 80 then
+                        return ch
+                    end
+                end
+                if opposingGoalPos then
+                    local d = (hrp.Position - opposingGoalPos).Magnitude
+                    if d < bestDist then
+                        bestDist = d
+                        bestGkChar = ch
+                    end
+                end
+            end
+        end
+    end
+    return bestGkChar
+end
+State.findOpposingGoalkeeper = findOpposingGoalkeeper
 
 -- Compute target 3D world position for Shoot Redirection ("Top Corners", "Left", "Right", "Smart")
 local function computeRedirectedGoalTarget(originPos, lookDir, mode)
     mode = mode or ConfigState.ShootRedirectionMode or "Smart"
     local goals = getAllGoalInfos()
+    local myTeam = getMyTeamName()
+    local mods = getSoccerModules()
+    local opposingTeam = nil
+    if myTeam and mods.MatchSettings and type(mods.MatchSettings.GetOpposingTeamName) == "function" then
+        local ok, opp = pcall(mods.MatchSettings.GetOpposingTeamName, myTeam)
+        if ok and type(opp) == "string" then
+            opposingTeam = opp
+        end
+    elseif myTeam == "Team1" then
+        opposingTeam = "Team2"
+    elseif myTeam == "Team2" then
+        opposingTeam = "Team1"
+    end
+
     local bestGoal = nil
     local bestScore = -math.huge
 
     for _, g in ipairs(goals) do
+        if opposingTeam and g.TeamName == opposingTeam then
+            bestGoal = g
+            break
+        end
         local toGoal = g.Position - originPos
         local dist = toGoal.Magnitude
-        if dist > 3 and dist < 1200 then
+        if dist > 2 and dist < 1200 then
             local dot = lookDir.X * (toGoal.X / dist) + lookDir.Z * (toGoal.Z / dist)
-            local score = (dot * 120) - (dist * 0.15)
+            local score = (dot * 120) - (dist * 0.12)
+            if myTeam and g.TeamName == myTeam then
+                score = score - 500
+            end
             if score > bestScore then
                 bestScore = score
                 bestGoal = g
@@ -8318,7 +8716,7 @@ local function computeRedirectedGoalTarget(originPos, lookDir, mode)
     end
 
     local goalCenter = bestGoal and bestGoal.Position or (originPos + lookDir * 95)
-    local goalWidth = (bestGoal and bestGoal.Size and math.max(bestGoal.Size.X, bestGoal.Size.Z, 28)) or 34
+    local goalWidth = (bestGoal and bestGoal.Size and math.max(bestGoal.Size.X, bestGoal.Size.Z, 30)) or 34
     local goalHeight = (bestGoal and bestGoal.Size and math.max(bestGoal.Size.Y, 12)) or 14
 
     local toCenter = (goalCenter - originPos)
@@ -8328,11 +8726,10 @@ local function computeRedirectedGoalTarget(originPos, lookDir, mode)
     else
         flatForward = flatForward.Unit
     end
-    -- Right vector relative to shooter facing the goal
     local rightVec = Vector3.new(-flatForward.Z, 0, flatForward.X)
 
-    local halfSpread = (goalWidth * 0.41)
-    local topY = goalCenter.Y + (goalHeight * 0.36)
+    local halfSpread = (goalWidth * 0.39)
+    local topY = goalCenter.Y + (goalHeight * 0.34)
     local midY = goalCenter.Y + (goalHeight * 0.12)
 
     local leftCornerPos = Vector3.new(
@@ -8346,26 +8743,13 @@ local function computeRedirectedGoalTarget(originPos, lookDir, mode)
         goalCenter.Z + rightVec.Z * halfSpread
     )
 
-    -- Check where the enemy Goalkeeper is positioned relative to left/right corners
     local gkPos = nil
-    if bestGoal and bestGoal.GoalkeeperPart then
+    local oppGkChar = findOpposingGoalkeeper(goalCenter)
+    local oppGkHRP = oppGkChar and oppGkChar:FindFirstChild("HumanoidRootPart")
+    if oppGkHRP then
+        gkPos = oppGkHRP.Position
+    elseif bestGoal and bestGoal.GoalkeeperPart then
         gkPos = bestGoal.GoalkeeperPart.Position
-    else
-        local chars = workspace and workspace:FindFirstChild("Characters")
-        local searchList = chars and chars:GetChildren() or {}
-        local minGkDist = 45
-        for _, ch in ipairs(searchList) do
-            if ch.Name ~= LocalPlayer.Name then
-                local hrp = ch:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    local dGoal = (hrp.Position - goalCenter).Magnitude
-                    if dGoal < minGkDist then
-                        minGkDist = dGoal
-                        gkPos = hrp.Position
-                    end
-                end
-            end
-        end
     end
 
     local chosenSide = "Right"
@@ -8378,7 +8762,6 @@ local function computeRedirectedGoalTarget(originPos, lookDir, mode)
         chosenSide = "Right"
         targetPos = Vector3.new(rightCornerPos.X, midY, rightCornerPos.Z)
     elseif mode == "Top Corners" then
-        -- Pick the top corner closer to camera look vector
         local dotRight = lookDir.X * rightVec.X + lookDir.Z * rightVec.Z
         if dotRight < 0 then
             chosenSide = "Left"
@@ -8417,14 +8800,13 @@ State.computeRedirectedGoalTarget = computeRedirectedGoalTarget
 
 -- Compute Curve Value for Auto-Curve ("Smart", "Right", "Left") + Curve Strength Slider
 local function computeAutoCurveValue(chosenSide)
-    local strength = math.clamp(tonumber(ConfigState.CurveStrength) or 1.5, 0.1, 5.0)
+    local strength = safeClamp(tonumber(ConfigState.CurveStrength) or 1.5, 0.1, 5.0)
     local dirMode = ConfigState.CurveDirection or "Smart"
     if dirMode == "Right" then
         return strength
     elseif dirMode == "Left" then
         return -strength
     else
-        -- "Smart": Bend around the keeper into the target corner
         if chosenSide == "Left" then
             return -strength
         else
@@ -8434,80 +8816,435 @@ local function computeAutoCurveValue(chosenSide)
 end
 State.computeAutoCurveValue = computeAutoCurveValue
 
--- Transform any Illegal Soccer ActionSession Kick Payload (Phase = "Start" | "Update" | "Release")
-local function transformKickActionPayload(payload)
-    if type(payload) ~= "table" or type(payload.Command) ~= "table" then
-        return payload
-    end
-    local cmd = payload.Command
+-- Build exact Illegal Soccer AimRay & KickDirection structure (matches ReplicatedStorage.Client.Gameplay.Actions.Shoot)
+local function buildAimStructure(targetPos, clientPos, isLob)
     local char = getLocalSoccerCharacter()
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local cam = workspace and workspace.CurrentCamera
-    local originPos = (cmd.AimDirection and cmd.AimDirection.Origin)
+    local origin = (cam and cam.CFrame.Position) or (hrp and hrp.Position) or clientPos or Vector3.new(0, 5, 0)
+    local refPos = clientPos or (hrp and hrp.Position) or origin
+
+    local flatDiff = Vector3.new(targetPos.X - refPos.X, 0, targetPos.Z - refPos.Z)
+    local kickDir = (flatDiff.Magnitude > 0.01) and flatDiff.Unit or Vector3.new(0, 0, -1)
+
+    local aimDiff = targetPos - origin
+    local aimDir = (aimDiff.Magnitude > 0.01) and aimDiff.Unit or kickDir
+
+    return {
+        AimRay = {
+            Origin = origin,
+            Direction = aimDir,
+            CameraCFrame = CFrame.new(origin, targetPos),
+            IsAirborne = (isLob == true),
+        },
+        KickDirection = kickDir,
+        ClientPosition = refPos,
+        IsLob = (isLob == true),
+    }
+end
+State.buildAimStructure = buildAimStructure
+
+-- Get Maximum Charge Seconds from ReplicatedStorage.Modules.Actions.KickPowerups
+local function getMaxKickChargeSeconds()
+    local mods = getSoccerModules()
+    if mods.KickPowerups and mods.Shoot and mods.Shoot.Constants and mods.Shoot.Constants.Kick then
+        local ok, res = pcall(function()
+            return mods.KickPowerups.GetChargeConstants(LocalPlayer, mods.Shoot.Constants.Kick)
+        end)
+        if ok and type(res) == "table" and tonumber(res.MaximumChargeSeconds) then
+            return tonumber(res.MaximumChargeSeconds)
+        end
+    end
+    return 0.4
+end
+State.getMaxKickChargeSeconds = getMaxKickChargeSeconds
+
+-- Get Smoothed Server Time from ReplicatedStorage.Client.Player.CharacterMotionSmoothing
+local function getSmoothedServerTime()
+    local mods = getSoccerModules()
+    if mods.CharacterMotionSmoothing and type(mods.CharacterMotionSmoothing.GetSmoothedServerTime) == "function" then
+        local ok, t = pcall(mods.CharacterMotionSmoothing.GetSmoothedServerTime)
+        if ok and tonumber(t) then
+            return tonumber(t)
+        end
+    end
+    return os.time() + (os.clock() % 1)
+end
+State.getSmoothedServerTime = getSmoothedServerTime
+
+-- Mutate any Kick Command Table or ActionSession Payload Table in Pure Lua (Never touches __namecall!)
+local function mutateKickCommandTable(tbl, phaseHint)
+    if type(tbl) ~= "table" then
+        return tbl
+    end
+    local cmd = (type(tbl.Command) == "table") and tbl.Command or tbl
+    local isKickCmd = (tbl.Protocol == "ActionSession")
+        or (cmd.Kind == "Kick")
+        or (cmd.AimDirection ~= nil)
+        or (cmd.KickDirection ~= nil)
+        or (cmd.PassType ~= nil)
+        or (cmd.MaximumChargeSeconds ~= nil)
+
+    if not isKickCmd then
+        return tbl
+    end
+
+    local char = getLocalSoccerCharacter()
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local cam = workspace and workspace.CurrentCamera
+    local ball = getPrimarySoccerBall(hrp and hrp.Position or nil)
+    local originPos = (ball and ball.Position)
+        or (cmd.ClientPosition)
         or (hrp and hrp.Position)
+        or (cmd.AimDirection and cmd.AimDirection.Origin)
         or (cam and cam.CFrame.Position)
         or Vector3.new(0, 5, 0)
-    local lookDir = (cmd.AimDirection and cmd.AimDirection.Direction)
-        or (cam and cam.CFrame.LookVector)
+    local lookDir = (cam and cam.CFrame.LookVector)
         or (hrp and hrp.CFrame.LookVector)
+        or (cmd.AimDirection and cmd.AimDirection.Direction)
         or Vector3.new(0, 0, -1)
 
     local targetPos, chosenSide = computeRedirectedGoalTarget(originPos, lookDir, ConfigState.ShootRedirectionMode)
+    local maxCharge = tonumber(cmd.MaximumChargeSeconds) or getMaxKickChargeSeconds()
 
     if ConfigState.ShootRedirection and targetPos then
-        local dirVec = (targetPos - originPos).Unit
-        local flatVec = Vector3.new(targetPos.X - originPos.X, 0, targetPos.Z - originPos.Z)
-        local flatUnit = (flatVec.Magnitude > 0.001) and flatVec.Unit or dirVec
-        if type(cmd.AimDirection) ~= "table" then
-            cmd.AimDirection = {}
+        local isAir = (cmd.AimDirection and cmd.AimDirection.IsAirborne) == true
+        local aimStruct = buildAimStructure(targetPos, originPos, isAir)
+        if type(cmd.AimDirection) == "table" then
+            cmd.AimDirection.Origin = aimStruct.AimRay.Origin
+            cmd.AimDirection.Direction = aimStruct.AimRay.Direction
+            cmd.AimDirection.CameraCFrame = aimStruct.AimRay.CameraCFrame
+        else
+            cmd.AimDirection = aimStruct.AimRay
         end
-        cmd.AimDirection.Direction = dirVec
-        cmd.AimDirection.Origin = originPos
-        cmd.AimDirection.CameraCFrame = CFrame.new(originPos, targetPos)
-        cmd.KickDirection = flatUnit
+        cmd.KickDirection = aimStruct.KickDirection
         if cmd.ChargeSeconds ~= nil then
-            cmd.ChargeSeconds = cmd.MaximumChargeSeconds or 0.4
+            cmd.ChargeSeconds = maxCharge
         end
+        cmd.MaximumChargeSeconds = maxCharge
     end
 
     if ConfigState.AutoCurve then
-        cmd.Curve = computeAutoCurveValue(chosenSide)
-        if payload.Phase ~= "Start" and cmd.AimLockedAt == nil then
-            cmd.AimLockedAt = (tonumber(cmd.ShotTime) and (tonumber(cmd.ShotTime) - 0.125)) or os.clock()
+        local curveVal = computeAutoCurveValue(chosenSide)
+        cmd.Curve = curveVal
+        local phase = tbl.Phase or phaseHint
+        if phase ~= "Start" and cmd.AimLockedAt == nil then
+            local sTime = tonumber(cmd.ShotTime) or getSmoothedServerTime()
+            cmd.AimLockedAt = sTime - 0.125
         end
         if cmd.ChargeSeconds ~= nil then
-            cmd.ChargeSeconds = cmd.MaximumChargeSeconds or 0.4
+            cmd.ChargeSeconds = maxCharge
         end
     end
 
-    return payload
+    return tbl
+end
+
+local function transformKickActionPayload(payload)
+    return mutateKickCommandTable(payload, type(payload) == "table" and payload.Phase or nil)
 end
 State.transformKickActionPayload = transformKickActionPayload
 
--- Hook ReplicatedStorage.Remotes.Ball.Kick & Ball.State ActionSession Packets (Start / Update / Release)
-pcall(function()
-    if type(hookmetamethod) == "function" then
-        local oldNamecall
-        oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-            local method = (type(getnamecallmethod) == "function" and getnamecallmethod()) or ""
-            if (method == "FireServer" or method == "fireserver") and self then
-                if self.Name == "State" then
-                    local sArgs = { ... }
-                    if type(sArgs[1]) == "string" and sArgs[1] ~= "" then
-                        State.lastActiveBallStateId = sArgs[1]
+-- Install Pure-Lua Module Hooks on ReplicatedStorage.Modules.Actions.ActionRemoteProtocol & ActionCommands
+-- (Zero __namecall usage -> Zero "argument #1 expects a string, but table was passed" errors!)
+State.arpOrigFunctions = State.arpOrigFunctions or {}
+State.arpHookFunctions = State.arpHookFunctions or {}
+
+local function installSoccerActionModuleHooks()
+    pcall(function()
+        local mods = getSoccerModules()
+        local arp = mods.ActionRemoteProtocol
+        if type(arp) == "table" then
+            for _, fnName in ipairs({ "Send", "Start", "Update", "Release", "LockAim" }) do
+                local curFn = arp[fnName]
+                if type(curFn) == "function" and curFn ~= State.arpHookFunctions[fnName] then
+                    State.arpOrigFunctions[fnName] = curFn
+                    local origFn = curFn
+                    local wrapper = function(...)
+                        if ConfigState.ShootRedirection or ConfigState.AutoCurve then
+                            local n = select("#", ...)
+                            for i = 1, n do
+                                local arg = select(i, ...)
+                                if type(arg) == "table" then
+                                    pcall(mutateKickCommandTable, arg, fnName)
+                                end
+                            end
+                        end
+                        return origFn(...)
                     end
-                elseif self.Name == "Kick" and (ConfigState.ShootRedirection or ConfigState.AutoCurve) then
-                    local args = { ... }
-                    if type(args[1]) == "table" and args[1].Protocol == "ActionSession" then
-                        args[1] = transformKickActionPayload(args[1])
-                        return oldNamecall(self, table.unpack(args))
+                    State.arpHookFunctions[fnName] = wrapper
+                    arp[fnName] = wrapper
+                end
+            end
+        end
+
+        local actCmds = mods.ActionCommands
+        if type(actCmds) == "table" and type(actCmds.Kick) == "function" and actCmds.Kick ~= State.arpHookFunctions["ActionCommands_Kick"] then
+            local origKick = actCmds.Kick
+            State.arpOrigFunctions["ActionCommands_Kick"] = origKick
+            local kickWrapper = function(params, ...)
+                if (ConfigState.ShootRedirection or ConfigState.AutoCurve) and type(params) == "table" then
+                    pcall(mutateKickCommandTable, params, "Release")
+                end
+                return origKick(params, ...)
+            end
+            State.arpHookFunctions["ActionCommands_Kick"] = kickWrapper
+            actCmds.Kick = kickWrapper
+        end
+
+        -- Also hook Remotes.Ball.Kick.FireServer only in mock test environments where ActionRemoteProtocol is not present
+        if not arp and ReplicatedStorage then
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+            local ballRemotes = remotes and remotes:FindFirstChild("Ball")
+            local kickRemote = ballRemotes and ballRemotes:FindFirstChild("Kick")
+            if kickRemote and type(kickRemote) == "table" and type(kickRemote.FireServer) == "function" and not kickRemote.__coreXyzWrapped then
+                local origFire = kickRemote.FireServer
+                kickRemote.__coreXyzWrapped = true
+                kickRemote.FireServer = function(selfObj, payload, ...)
+                    if (ConfigState.ShootRedirection or ConfigState.AutoCurve) and type(payload) == "table" then
+                        payload = transformKickActionPayload(payload)
+                    end
+                    return origFire(selfObj, payload, ...)
+                end
+            end
+        end
+    end)
+end
+State.installSoccerActionModuleHooks = installSoccerActionModuleHooks
+installSoccerActionModuleHooks()
+
+-- Install Direct Module Hooks for Infinite Stamina + Anti-Rubberband (Sprint, BallHitStamina, LocalMovementGuard, CharacterPlacement)
+State.staminaOrigFunctions = State.staminaOrigFunctions or {}
+
+local function installStaminaAndMovementGuardHooks()
+    pcall(function()
+        local mods = getSoccerModules()
+
+        -- 1. Anti-Teleport / Anti-Rubberband Guard Bypass (LocalMovementGuard & CharacterPlacement & AntiExploitSettings)
+        if ReplicatedStorage then
+            local modulesSub = ReplicatedStorage:FindFirstChild("Modules")
+            local charsModFolder = modulesSub and modulesSub:FindFirstChild("Characters")
+            local antiExploit = charsModFolder and charsModFolder:FindFirstChild("AntiExploitSettings")
+            if antiExploit and antiExploit.SetAttribute then
+                antiExploit:SetAttribute("LocalAntiExploitEnabled", false)
+            end
+        end
+
+        for _, guardMod in ipairs({ mods.LocalMovementGuardCore, mods.LocalMovementGuardClient }) do
+            if type(guardMod) == "table" and type(guardMod.Validate) == "function" and not guardMod.__coreXyzGuardHooked then
+                guardMod.__coreXyzGuardHooked = true
+                local origVal = guardMod.Validate
+                local newVal = function(...)
+                    if ConfigState.InfiniteStamina or ConfigState.BypassKickoffFreeze or ConfigState.AutoGoalkeeper or ConfigState.AutoTackle then
+                        return true
+                    end
+                    return origVal(...)
+                end
+                guardMod.Validate = newVal
+                if type(hookfunction) == "function" then
+                    pcall(hookfunction, origVal, newVal)
+                end
+            end
+        end
+
+        local placement = mods.CharacterPlacement
+        if type(placement) == "table" and not placement.__coreXyzPlacementHooked then
+            placement.__coreXyzPlacementHooked = true
+            if type(placement.TryRepairOwnedPosition) == "function" then
+                local origTry = placement.TryRepairOwnedPosition
+                placement.TryRepairOwnedPosition = function(...)
+                    if ConfigState.InfiniteStamina or ConfigState.BypassKickoffFreeze or ConfigState.AutoGoalkeeper then
+                        return true, nil, nil
+                    end
+                    return origTry(...)
+                end
+            end
+            if type(placement.RepairPosition) == "function" then
+                local origRep = placement.RepairPosition
+                placement.RepairPosition = function(c, ...)
+                    if ConfigState.InfiniteStamina or ConfigState.BypassKickoffFreeze or ConfigState.AutoGoalkeeper then
+                        local h = c and c:FindFirstChild("HumanoidRootPart")
+                        if h then return h.Position end
+                    end
+                    return origRep(c, ...)
+                end
+            end
+        end
+
+        -- 2. Sprint Stamina Drain & Spend Hooks (ReplicatedStorage.Modules.Actions.Sprint)
+        local sprintMod = mods.Sprint
+        if type(sprintMod) == "table" and not sprintMod.__coreXyzSprintHooked then
+            sprintMod.__coreXyzSprintHooked = true
+            if type(sprintMod.GetDrainAmount) == "function" then
+                local origDrain = sprintMod.GetDrainAmount
+                local drainWrapper = function(...)
+                    if ConfigState.InfiniteStamina then
+                        return 0
+                    end
+                    return origDrain(...)
+                end
+                sprintMod.GetDrainAmount = drainWrapper
+                if type(hookfunction) == "function" then
+                    pcall(hookfunction, origDrain, drainWrapper)
+                end
+            end
+            if type(sprintMod.GetSpendAmount) == "function" then
+                local origSpend = sprintMod.GetSpendAmount
+                local spendWrapper = function(...)
+                    if ConfigState.InfiniteStamina then
+                        return 0
+                    end
+                    return origSpend(...)
+                end
+                sprintMod.GetSpendAmount = spendWrapper
+                if type(hookfunction) == "function" then
+                    pcall(hookfunction, origSpend, spendWrapper)
+                end
+            end
+            if type(sprintMod.GetBoost) == "function" then
+                local origBoost = sprintMod.GetBoost
+                local boostWrapper = function(...)
+                    local res = origBoost(...)
+                    if ConfigState.InfiniteStamina then
+                        if type(res) == "table" then
+                            local copy = {}
+                            for k, v in pairs(res) do copy[k] = v end
+                            copy.ForceSprint = true
+                            return copy
+                        else
+                            return { ForceSprint = true, SpeedMultiplier = 1 }
+                        end
+                    end
+                    return res
+                end
+                sprintMod.GetBoost = boostWrapper
+                if type(hookfunction) == "function" then
+                    pcall(hookfunction, origBoost, boostWrapper)
+                end
+            end
+        end
+
+        -- 3. Ball Hit Stamina Cost Hook (ReplicatedStorage.Modules.Actions.BallHitStamina)
+        local ballHitStam = mods.BallHitStamina
+        if type(ballHitStam) == "table" and type(ballHitStam.GetCost) == "function" and not ballHitStam.__coreXyzCostHooked then
+            ballHitStam.__coreXyzCostHooked = true
+            local origCost = ballHitStam.GetCost
+            local costWrapper = function(...)
+                if ConfigState.InfiniteStamina then
+                    return 0
+                end
+                return origCost(...)
+            end
+            ballHitStam.GetCost = costWrapper
+            if type(hookfunction) == "function" then
+                pcall(hookfunction, origCost, costWrapper)
+            end
+        end
+    end)
+end
+State.installStaminaAndMovementGuardHooks = installStaminaAndMovementGuardHooks
+installStaminaAndMovementGuardHooks()
+
+-- Install Direct Module Hooks for Anti-Ragdoll, Anti-Knockback, and Anti-Stun
+local function installAntiRagdollAndKnockbackHooks()
+    pcall(function()
+        local mods = getSoccerModules()
+        local ragdollMod = mods.Ragdoll
+        if type(ragdollMod) == "table" and not ragdollMod.__coreXyzRagdollHooked then
+            ragdollMod.__coreXyzRagdollHooked = true
+            if type(ragdollMod.SetEnabled) == "function" then
+                local origSetEnabled = ragdollMod.SetEnabled
+                local setEnabledWrap = function(actor, enabledFlag, ...)
+                    if ConfigState.AntiRagdoll and enabledFlag == true then
+                        return
+                    end
+                    return origSetEnabled(actor, enabledFlag, ...)
+                end
+                ragdollMod.SetEnabled = setEnabledWrap
+                if type(hookfunction) == "function" then pcall(hookfunction, origSetEnabled, setEnabledWrap) end
+            end
+            if type(ragdollMod.SetRagdolledUntil) == "function" then
+                local origUntil = ragdollMod.SetRagdolledUntil
+                local untilWrap = function(...)
+                    if ConfigState.AntiRagdoll then return end
+                    return origUntil(...)
+                end
+                ragdollMod.SetRagdolledUntil = untilWrap
+                if type(hookfunction) == "function" then pcall(hookfunction, origUntil, untilWrap) end
+            end
+            for _, nilMethod in ipairs({ "GetState", "GetRagdolledUntil", "GetVelocity", "GetHitOffset", "GetEffectHitOffset" }) do
+                if type(ragdollMod[nilMethod]) == "function" then
+                    local origFn = ragdollMod[nilMethod]
+                    local wrapFn = function(...)
+                        if ConfigState.AntiRagdoll then return nil end
+                        return origFn(...)
+                    end
+                    ragdollMod[nilMethod] = wrapFn
+                    if type(hookfunction) == "function" then pcall(hookfunction, origFn, wrapFn) end
+                end
+            end
+            if type(ragdollMod.IsActorRagdolled) == "function" then
+                local origIsRag = ragdollMod.IsActorRagdolled
+                local isRagWrap = function(...)
+                    if ConfigState.AntiRagdoll then return false end
+                    return origIsRag(...)
+                end
+                ragdollMod.IsActorRagdolled = isRagWrap
+                if type(hookfunction) == "function" then pcall(hookfunction, origIsRag, isRagWrap) end
+            end
+        end
+
+        -- Hook Knockback & Impact modules
+        for _, kbPath in ipairs({
+            "Modules.Actions.Knockback",
+            "Modules.Characters.Knockback",
+            "Modules.Actions.KnockbackMotion",
+            "Modules.Characters.KnockbackMotion",
+            "Modules.Actions.Impact",
+            "Modules.Characters.Impact",
+        }) do
+            local kbMod = tryRequireRS(kbPath)
+            if type(kbMod) == "table" and type(kbMod.Run) == "function" and not kbMod.__coreXyzKbHooked then
+                kbMod.__coreXyzKbHooked = true
+                local origRun = kbMod.Run
+                local runWrap = function(...)
+                    if ConfigState.AntiKnockback or ConfigState.AntiRagdoll then
+                        State.lastKnockbackSuppressedAt = os.clock()
+                        return
+                    end
+                    return origRun(...)
+                end
+                kbMod.Run = runWrap
+                if type(hookfunction) == "function" then pcall(hookfunction, origRun, runWrap) end
+            end
+        end
+
+        -- Hook Stun & ActionLocks modules
+        local stunMod = mods.Stun
+        if type(stunMod) == "table" and not stunMod.__coreXyzStunHooked then
+            stunMod.__coreXyzStunHooked = true
+            for k, fn in pairs(stunMod) do
+                if type(fn) == "function" then
+                    local origFn = fn
+                    local lowK = string.lower(tostring(k))
+                    if string.find(lowK, "is") or string.find(lowK, "check") then
+                        stunMod[k] = function(...)
+                            if ConfigState.AntiStun then return false end
+                            return origFn(...)
+                        end
+                    elseif string.find(lowK, "set") or string.find(lowK, "apply") or string.find(lowK, "stun") then
+                        stunMod[k] = function(...)
+                            if ConfigState.AntiStun then return end
+                            return origFn(...)
+                        end
                     end
                 end
             end
-            return oldNamecall(self, ...)
-        end)
-    end
-end)
+        end
+    end)
+end
+State.installAntiRagdollAndKnockbackHooks = installAntiRagdollAndKnockbackHooks
+installAntiRagdollAndKnockbackHooks()
 
 -- Sync ReplicatedStorage.Modules.CurvedKicks Attributes & Module Table
 local function syncCurvedKicksModule()
@@ -8536,7 +9273,7 @@ local ballHitboxAdornments = {}
 
 local function applyBallHitbox()
     local enabled = (ConfigState.BallHitbox == true)
-    local sz = math.clamp(tonumber(ConfigState.BallHitboxSize) or 14, 2, 60)
+    local sz = safeClamp(tonumber(ConfigState.BallHitboxSize) or 14, 2, 60)
     local targetVec = Vector3.new(sz, sz, sz)
 
     local balls = getActiveSoccerBalls()
@@ -8559,7 +9296,7 @@ local function applyBallHitbox()
                         box.Color3 = Theme.Accent
                         box.LineThickness = 0.04
                         box.SurfaceColor3 = Theme.Accent
-                        box.SurfaceTransparency = 0.78
+                        box.SurfaceTransparency = 0.82
                         box.Parent = UI.OverlayContainer
                         ballHitboxAdornments[ball] = box
                     end)
@@ -8582,7 +9319,6 @@ local function applyBallHitbox()
         end
     end
 
-    -- Also expand LocalPlayer's Character.Ball carrier hitbox part
     local char = getLocalSoccerCharacter()
     local charBall = char and char:FindFirstChild("Ball")
     if charBall and charBall:IsA("BasePart") then
@@ -8602,21 +9338,15 @@ local function applyBallHitbox()
         end)
     end
 
-    -- Also update ReplicatedStorage.Modules.Gameplay.HitboxSettings if readable
     pcall(function()
-        local modules = ReplicatedStorage and ReplicatedStorage:FindFirstChild("Modules")
-        local gameplay = modules and modules:FindFirstChild("Gameplay")
-        local hbSettings = gameplay and gameplay:FindFirstChild("HitboxSettings")
-        if hbSettings then
-            local okReq, hbTbl = pcall(require, hbSettings)
-            if okReq and type(hbTbl) == "table" then
-                for k, v in pairs(hbTbl) do
-                    if type(v) == "number" and (string.find(string.lower(tostring(k)), "ball") or string.find(string.lower(tostring(k)), "radius") or string.find(string.lower(tostring(k)), "reach")) then
-                        if State.originalBallSizes["__hb_" .. tostring(k)] == nil then
-                            State.originalBallSizes["__hb_" .. tostring(k)] = v
-                        end
-                        hbTbl[k] = enabled and sz or State.originalBallSizes["__hb_" .. tostring(k)]
+        local hbTbl = tryRequireRS("Modules.Gameplay.HitboxSettings")
+        if type(hbTbl) == "table" then
+            for k, v in pairs(hbTbl) do
+                if type(v) == "number" and (string.find(string.lower(tostring(k)), "ball") or string.find(string.lower(tostring(k)), "radius") or string.find(string.lower(tostring(k)), "reach")) then
+                    if State.originalBallSizes["__hb_" .. tostring(k)] == nil then
+                        State.originalBallSizes["__hb_" .. tostring(k)] = v
                     end
+                    hbTbl[k] = enabled and sz or State.originalBallSizes["__hb_" .. tostring(k)]
                 end
             end
         end
@@ -8627,7 +9357,7 @@ State.applyBallHitbox = applyBallHitbox
 -- Apply & Restore Tackle Hitbox + Slider
 local function applyTackleHitbox()
     local enabled = (ConfigState.TackleHitbox == true)
-    local sz = math.clamp(tonumber(ConfigState.TackleHitboxSize) or 16, 2, 50)
+    local sz = safeClamp(tonumber(ConfigState.TackleHitboxSize) or 16, 2, 50)
     local targetVec = Vector3.new(sz, sz, sz)
     local char = getLocalSoccerCharacter()
     local combatHitboxes = char and char:FindFirstChild("CombatHitboxes")
@@ -8653,7 +9383,7 @@ local function applyTackleHitbox()
 end
 State.applyTackleHitbox = applyTackleHitbox
 
--- Skinchanger Engine: Ball Skins, Jersey Skins, Item Skins ("Skin Name (ItemName)")
+-- Skinchanger Engine: Ball Skins (ReplicatedStorage.Cosmetics.Balls), Jerseys (ReplicatedStorage.Cosmetics.Jerseys & TeamJersey.Handle), Item Skins (ReplicatedStorage.ItemSkins.<Item>.<Skin>)
 local function applyBallSkinChanger()
     if not ConfigState.BallSkinsEnabled then
         return
@@ -8663,27 +9393,67 @@ local function applyBallSkinChanger()
     local ballsFolder = cosmetics and cosmetics:FindFirstChild("Balls")
     local template = ballsFolder and ballsFolder:FindFirstChild(skinName)
 
+    -- Hook ReplicatedStorage.Modules.Ball.Skins if present
+    pcall(function()
+        local mods = getSoccerModules()
+        local skinsMod = mods.BallSkinsMod
+        if type(skinsMod) == "table" and not skinsMod.__coreXyzBallSkinHooked then
+            skinsMod.__coreXyzBallSkinHooked = true
+            for k, fn in pairs(skinsMod) do
+                if type(fn) == "function" and (string.find(string.lower(tostring(k)), "skin") or string.find(string.lower(tostring(k)), "get")) then
+                    local origFn = fn
+                    skinsMod[k] = function(...)
+                        if ConfigState.BallSkinsEnabled and ConfigState.SelectedBallSkin then
+                            local res = origFn(...)
+                            if type(res) == "string" then
+                                return tostring(ConfigState.SelectedBallSkin)
+                            end
+                            return res
+                        end
+                        return origFn(...)
+                    end
+                end
+            end
+        end
+    end)
+
     local balls = getActiveSoccerBalls()
     for _, ball in ipairs(balls) do
         if ball and ball.Parent then
             pcall(function()
                 ball:SetAttribute("AppliedBallSkin", skinName)
-                local modelContainer = ball:FindFirstChild("Model") or ball
-                local existingModel = modelContainer:FindFirstChild("Default") or modelContainer:FindFirstChildWhichIsA("Model")
+                local existingDefaultModel = ball:FindFirstChild("Default") or ball:FindFirstChildWhichIsA("Model")
                 if template then
-                    local templateBallMesh = template:FindFirstChild("Ball") or template:FindFirstChildWhichIsA("BasePart")
-                    local targetMesh = (existingModel and existingModel:FindFirstChild("Ball")) or (ball:IsA("BasePart") and ball) or nil
+                    local templateBallMesh = template:FindFirstChild("Ball") or template.PrimaryPart or template:FindFirstChildWhichIsA("BasePart")
+                    local targetMesh = (existingDefaultModel and (existingDefaultModel:FindFirstChild("Ball") or existingDefaultModel.PrimaryPart or existingDefaultModel:FindFirstChildWhichIsA("BasePart")))
+                        or (ball:IsA("BasePart") and ball)
+                        or nil
+
                     if templateBallMesh and targetMesh then
                         pcall(function()
                             targetMesh.Color = templateBallMesh.Color
                             targetMesh.Material = templateBallMesh.Material
+                            -- Swap SurfaceAppearance on the target Ball MeshPart
+                            if ball:GetAttribute("CoreXyzLastSurfaceSkin") ~= skinName then
+                                ball:SetAttribute("CoreXyzLastSurfaceSkin", skinName)
+                                local newSurf = templateBallMesh:FindFirstChildOfClass("SurfaceAppearance")
+                                if newSurf and newSurf.Clone then
+                                    local oldSurf = targetMesh:FindFirstChildOfClass("SurfaceAppearance")
+                                    if oldSurf and oldSurf.Destroy then
+                                        oldSurf:Destroy()
+                                    end
+                                    local clonedSurf = newSurf:Clone()
+                                    clonedSurf.Parent = targetMesh
+                                end
+                            end
                         end)
                     end
-                    -- Also clone cosmetic effects (ParticleEmitter, Trail, PointLight, Highlight) if not already applied for this skin
+
+                    -- Also clone multi-part 3D cosmetic skins (like Crimson Core, Jade Core) and weld to ClientBall_MainMatch
                     if ball:GetAttribute("CoreXyzLastClonedSkin") ~= skinName and template.Clone then
                         ball:SetAttribute("CoreXyzLastClonedSkin", skinName)
-                        local oldClone = modelContainer:FindFirstChild("CoreXyzCosmeticSkin")
-                        if oldClone then
+                        local oldClone = ball:FindFirstChild("CoreXyzCosmeticSkin")
+                        if oldClone and oldClone.Destroy then
                             oldClone:Destroy()
                         end
                         local clonedSkin = template:Clone()
@@ -8691,12 +9461,20 @@ local function applyBallSkinChanger()
                         for _, desc in ipairs(clonedSkin:GetDescendants()) do
                             if desc:IsA("BasePart") then
                                 desc.CanCollide = false
+                                desc.CanTouch = false
+                                desc.CanQuery = false
                                 desc.Anchored = false
                                 desc.Massless = true
                                 desc.CFrame = ball.CFrame
+                                pcall(function()
+                                    local wc = Instance.new("WeldConstraint")
+                                    wc.Part0 = ball
+                                    wc.Part1 = desc
+                                    wc.Parent = desc
+                                end)
                             end
                         end
-                        clonedSkin.Parent = modelContainer
+                        clonedSkin.Parent = ball
                     end
                 end
             end)
@@ -8718,17 +9496,45 @@ local function applyJerseySkinChanger()
         local cosmetics = ReplicatedStorage and ReplicatedStorage:FindFirstChild("Cosmetics")
         local jerseysFolder = cosmetics and cosmetics:FindFirstChild("Jerseys")
         local template = jerseysFolder and jerseysFolder:FindFirstChild(skinName)
-        if template then
-            local shirt = template:FindFirstChildOfClass("Shirt")
-            local pants = template:FindFirstChildOfClass("Pants")
-            local charShirt = char:FindFirstChildOfClass("Shirt")
-            local charPants = char:FindFirstChildOfClass("Pants")
-            if shirt and charShirt then
-                charShirt.ShirtTemplate = shirt.ShirtTemplate
+        if not template then return end
+
+        -- 1. Live Match Jersey Accessory: char.TeamJersey.Handle (MeshPart with SurfaceAppearance + WrapLayer + @AnimationDesign)
+        local teamJerseyAcc = char:FindFirstChild("TeamJersey")
+        local jerseyHandle = teamJerseyAcc and teamJerseyAcc:FindFirstChild("Handle")
+        local templateMesh = template:FindFirstChild("Football_Jersey") or template:FindFirstChildWhichIsA("BasePart")
+
+        if jerseyHandle and templateMesh then
+            if teamJerseyAcc:GetAttribute("CoreXyzAppliedJersey") ~= skinName then
+                teamJerseyAcc:SetAttribute("CoreXyzAppliedJersey", skinName)
+                local animDesign = templateMesh.GetAttribute and templateMesh:GetAttribute("AnimationDesign") or nil
+                if jerseyHandle.SetAttribute then
+                    jerseyHandle:SetAttribute("AnimationDesign", animDesign)
+                end
+                if teamJerseyAcc.SetAttribute then
+                    teamJerseyAcc:SetAttribute("AnimationDesign", animDesign)
+                end
+                local newSurf = templateMesh:FindFirstChildOfClass("SurfaceAppearance")
+                if newSurf and newSurf.Clone then
+                    local oldSurf = jerseyHandle:FindFirstChildOfClass("SurfaceAppearance")
+                    if oldSurf and oldSurf.Destroy then
+                        oldSurf:Destroy()
+                    end
+                    local clonedSurf = newSurf:Clone()
+                    clonedSurf.Parent = jerseyHandle
+                end
             end
-            if pants and charPants then
-                charPants.PantsTemplate = pants.PantsTemplate
-            end
+        end
+
+        -- 2. Classic Shirt/Pants fallback if present
+        local shirt = template:FindFirstChildOfClass("Shirt")
+        local pants = template:FindFirstChildOfClass("Pants")
+        local charShirt = char:FindFirstChildOfClass("Shirt")
+        local charPants = char:FindFirstChildOfClass("Pants")
+        if shirt and charShirt then
+            charShirt.ShirtTemplate = shirt.ShirtTemplate
+        end
+        if pants and charPants then
+            charPants.PantsTemplate = pants.PantsTemplate
         end
     end)
 end
@@ -8758,13 +9564,53 @@ local function applyItemSkinChanger()
         end)
     end
     pcall(function()
+        -- Hook ReplicatedStorage.Modules.Items.ItemSkins so client item builder uses our chosen skin
+        local mods = getSoccerModules()
+        local itemSkinsMod = mods.ItemSkinsMod
+        if type(itemSkinsMod) == "table" and not itemSkinsMod.__coreXyzItemSkinHooked then
+            itemSkinsMod.__coreXyzItemSkinHooked = true
+            for k, fn in pairs(itemSkinsMod) do
+                if type(fn) == "function" then
+                    local origFn = fn
+                    itemSkinsMod[k] = function(...)
+                        if ConfigState.ItemSkinsEnabled and ConfigState.SelectedItemSkin then
+                            local sName, _ = parseItemSkinSelection(ConfigState.SelectedItemSkin)
+                            local res = origFn(...)
+                            if type(res) == "string" then
+                                return sName
+                            end
+                            return res
+                        end
+                        return origFn(...)
+                    end
+                end
+            end
+        end
+
         local itemSkinsFolder = ReplicatedStorage and ReplicatedStorage:FindFirstChild("ItemSkins")
         local catFolder = itemSkinsFolder and itemSkinsFolder:FindFirstChild(itemName)
         local skinTemplate = catFolder and catFolder:FindFirstChild(skinName)
         if skinTemplate and char then
-            local heldTool = char:FindFirstChild(itemName) or char:FindFirstChildOfClass("Tool") or char:FindFirstChildOfClass("Model")
+            local heldTool = char:FindFirstChild(itemName) or char:FindFirstChild("HeldItem") or char:FindFirstChildOfClass("Tool") or char:FindFirstChildOfClass("Model")
             if heldTool then
                 heldTool:SetAttribute("AppliedItemSkin", skinName)
+                local templateSkinPart = skinTemplate:FindFirstChild("SkinPart", true) or skinTemplate:FindFirstChildWhichIsA("MeshPart", true)
+                local targetSkinPart = heldTool:FindFirstChild("SkinPart", true) or heldTool:FindFirstChildWhichIsA("MeshPart", true)
+                if templateSkinPart and targetSkinPart and heldTool:GetAttribute("CoreXyzLastItemSkin") ~= skinName then
+                    heldTool:SetAttribute("CoreXyzLastItemSkin", skinName)
+                    pcall(function()
+                        targetSkinPart.Color = templateSkinPart.Color
+                        targetSkinPart.Material = templateSkinPart.Material
+                        local newSurf = templateSkinPart:FindFirstChildOfClass("SurfaceAppearance")
+                        if newSurf and newSurf.Clone then
+                            local oldSurf = targetSkinPart:FindFirstChildOfClass("SurfaceAppearance")
+                            if oldSurf and oldSurf.Destroy then
+                                oldSurf:Destroy()
+                            end
+                            newSurf:Clone().Parent = targetSkinPart
+                        end
+                    end)
+                end
             end
         end
     end)
@@ -8863,13 +9709,15 @@ local function updateBallTrajectoryAndESP(camera, animClock)
     -- 1. Ball ESP
     if ConfigState.BallESP and ball and camera then
         local bCol = ConfigState.ESPRainbow and rainbowCol or (ConfigState.BallESPColor or Color3.fromRGB(75, 225, 255))
-        ballEspHighlight.Adornee = ball
+        local adorneeTarget = ball:FindFirstChild("Default") or ball
+        ballEspHighlight.Adornee = adorneeTarget
         ballEspHighlight.FillColor = bCol
         ballEspHighlight.OutlineColor = Theme.White
         ballEspHighlight.Enabled = true
 
-        local screenPos, onScreen = camera:WorldToViewportPoint(ball.Position + Vector3.new(0, 2.2, 0))
-        if onScreen then
+        local screenPos, onScreen = camera:WorldToViewportPoint(ball.Position + Vector3.new(0, 2.4, 0))
+        local inFront = (not screenPos.Z) or (screenPos.Z > 0.1)
+        if onScreen and inFront then
             local dist = math.floor((ball.Position - refPos).Magnitude + 0.5)
             ballEspTag.Position = UDim2.fromOffset(screenPos.X, screenPos.Y)
             ballEspTag.Text = string.format("⚽ BALL [%d studs]", dist)
@@ -8888,47 +9736,62 @@ local function updateBallTrajectoryAndESP(camera, animClock)
     -- 2. 3D Ball Trajectory + Landing Spot
     if ConfigState.BallTrajectory and ball and camera then
         local tCol = ConfigState.TrajectoryRainbow and rainbowCol or (ConfigState.TrajectoryColor or Color3.fromRGB(115, 95, 255))
-        local duration = math.clamp(tonumber(ConfigState.TrajectoryDuration) or 2.0, 0.1, 5.0)
+        local duration = safeClamp(tonumber(ConfigState.TrajectoryDuration) or 2.0, 0.1, 5.0)
         local vel = State.estimatedBallVelocity or ball.AssemblyLinearVelocity or ball.Velocity or Vector3.zero
-        if vel.Magnitude < 2.0 and myHRP then
-            -- Preview forward kick trajectory when ball is stationary
-            local aimTarget, side = computeRedirectedGoalTarget(ball.Position, myHRP.CFrame.LookVector, ConfigState.ShootRedirectionMode)
-            local dir = (aimTarget - ball.Position).Unit
-            vel = dir * 85 + Vector3.new(0, 24, 0)
+
+        -- Only preview forward shot arc when stationary if LocalPlayer actually has possession or is right next to the ball
+        if vel.Magnitude < 2.5 and myHRP then
+            local distToBall = (ball.Position - myHRP.Position).Magnitude
+            if hasLocalBallPossession() or distToBall <= 12 then
+                local aimTarget, _ = computeRedirectedGoalTarget(ball.Position, myHRP.CFrame.LookVector, ConfigState.ShootRedirectionMode)
+                local diff = aimTarget - ball.Position
+                local dir = (diff.Magnitude > 0.01) and diff.Unit or myHRP.CFrame.LookVector
+                vel = dir * 85 + Vector3.new(0, 22, 0)
+            end
         end
 
         local curveLat = State.estimatedBallCurveAccel or Vector3.zero
-        if ConfigState.AutoCurve and curveLat.Magnitude < 1 then
+        if ConfigState.AutoCurve and vel.Magnitude >= 2.5 and curveLat.Magnitude < 1 then
             local rightDir = Vector3.new(-vel.Z, 0, vel.X)
             if rightDir.Magnitude > 0.01 then
                 rightDir = rightDir.Unit
             end
             local cVal = computeAutoCurveValue("Right")
-            curveLat = rightDir * (cVal * 16)
+            curveLat = rightDir * (cVal * 14)
         end
 
         local grav = Vector3.new(0, -(tonumber(workspace.Gravity) or 196.2) * 0.45, 0)
         local startPos = ball.Position
-        local groundY = math.min(startPos.Y - 1.2, 1.5)
+        local groundY = 1.6
         local prevPos = startPos
         local landingPos = startPos
+        local hasLanded = false
 
         for i = 1, TRAJECTORY_SEGMENT_COUNT do
             local t = (i / TRAJECTORY_SEGMENT_COUNT) * duration
-            local simPos = startPos + (vel * t) + ((grav + curveLat) * (0.5 * t * t))
-            if simPos.Y <= groundY then
-                simPos = Vector3.new(simPos.X, groundY, simPos.Z)
-                if landingPos == startPos then
+            local simPos
+            if vel.Magnitude < 1.5 then
+                simPos = startPos
+                landingPos = startPos
+            else
+                simPos = startPos + (vel * t) + ((grav + curveLat) * (0.5 * t * t))
+                if simPos.Y <= groundY then
+                    simPos = Vector3.new(simPos.X, groundY, simPos.Z)
+                    if not hasLanded then
+                        hasLanded = true
+                        landingPos = simPos
+                    end
+                elseif not hasLanded then
                     landingPos = simPos
                 end
-            else
-                landingPos = simPos
             end
 
             local p1, vis1 = camera:WorldToViewportPoint(prevPos)
             local p2, vis2 = camera:WorldToViewportPoint(simPos)
             local seg = trajectorySegments[i]
-            if vis1 or vis2 then
+            local z1Ok = (not p1.Z) or (p1.Z > 0.15)
+            local z2Ok = (not p2.Z) or (p2.Z > 0.15)
+            if vel.Magnitude >= 1.5 and z1Ok and z2Ok and (vis1 or vis2) then
                 drawLineFrame(seg, Vector2.new(p1.X, p1.Y), Vector2.new(p2.X, p2.Y), tCol, 2.5)
             else
                 seg.Visible = false
@@ -8937,11 +9800,14 @@ local function updateBallTrajectoryAndESP(camera, animClock)
         end
 
         local landScreen, landVis = camera:WorldToViewportPoint(landingPos)
-        if landVis then
+        local landZOk = (not landScreen.Z) or (landScreen.Z > 0.15)
+        if landVis and landZOk then
+            local landDist = math.floor((landingPos - refPos).Magnitude + 0.5)
             landingSpotFrame.Position = UDim2.fromOffset(landScreen.X, landScreen.Y)
             landingSpotFrame.BackgroundColor3 = tCol
             landingSpotStroke.Color = tCol
             landingSpotFrame.Visible = true
+            landingSpotLabel.Text = string.format("LANDING [%dm]", landDist)
             landingSpotLabel.TextColor3 = tCol
             landingSpotLabel.Visible = true
         else
@@ -8955,6 +9821,9 @@ end
 State.updateBallTrajectoryAndESP = updateBallTrajectoryAndESP
 
 local function applyIllegalSoccerSettings()
+    installSoccerActionModuleHooks()
+    installStaminaAndMovementGuardHooks()
+    installAntiRagdollAndKnockbackHooks()
     applyBallHitbox()
     applyTackleHitbox()
     syncCurvedKicksModule()
@@ -8986,6 +9855,9 @@ do
 
     createToggle(shootingSec, "Shoot Redirection", ConfigState.ShootRedirection == true, function(val)
         ConfigState.ShootRedirection = val
+        if val then
+            installSoccerActionModuleHooks()
+        end
     end, { ShowKeybindBadge = true })
 
     createDropdown(shootingSec, "Shoot Redirection Mode", { "Top Corners", "Left", "Right", "Smart" }, ConfigState.ShootRedirectionMode or "Smart", function(opt)
@@ -8994,6 +9866,7 @@ do
 
     createToggle(shootingSec, "Auto-Curve", ConfigState.AutoCurve == true, function(val)
         ConfigState.AutoCurve = val
+        installSoccerActionModuleHooks()
         syncCurvedKicksModule()
     end, { ShowKeybindBadge = true })
 
@@ -9058,6 +9931,7 @@ do
     createToggle(tackleSec, "Auto-Goalkeeper", ConfigState.AutoGoalkeeper == true, function(val)
         ConfigState.AutoGoalkeeper = val
         if val then
+            installStaminaAndMovementGuardHooks()
             notify(
                 "Adaptive Godlike GK",
                 string.format(
@@ -9080,14 +9954,23 @@ do
 
     createToggle(antiSec, "Anti-Ragdoll", ConfigState.AntiRagdoll == true, function(val)
         ConfigState.AntiRagdoll = val
+        if val then
+            installAntiRagdollAndKnockbackHooks()
+        end
     end, { ShowKeybindBadge = true })
 
     createToggle(antiSec, "Anti-Knockback", ConfigState.AntiKnockback == true, function(val)
         ConfigState.AntiKnockback = val
+        if val then
+            installAntiRagdollAndKnockbackHooks()
+        end
     end, { ShowKeybindBadge = true })
 
     createToggle(antiSec, "Anti-Stun", ConfigState.AntiStun == true, function(val)
         ConfigState.AntiStun = val
+        if val then
+            installAntiRagdollAndKnockbackHooks()
+        end
     end, { ShowKeybindBadge = true })
 
     local playerMiscSec = UI.createSectionBox(MiscTab, "Player Miscellaneous")
@@ -9099,6 +9982,7 @@ do
     createToggle(playerMiscSec, "Bypass Kickoff Freeze", ConfigState.BypassKickoffFreeze == true, function(val)
         ConfigState.BypassKickoffFreeze = val
         if val then
+            installStaminaAndMovementGuardHooks()
             pcall(function()
                 local clientFolder = ReplicatedStorage and ReplicatedStorage:FindFirstChild("Client")
                 local freezeMod = clientFolder and clientFolder:FindFirstChild("KickoffFreeze")
@@ -9122,6 +10006,9 @@ do
 
     createToggle(playerMiscSec, "Infinite Stamina", ConfigState.InfiniteStamina == true, function(val)
         ConfigState.InfiniteStamina = val
+        if val then
+            installStaminaAndMovementGuardHooks()
+        end
     end, { ShowKeybindBadge = true })
 end
 
@@ -9193,7 +10080,7 @@ do
     local playerEspToggleCtrl = createToggle(ballVisSec, "Player ESP", ConfigState.PlayerESP == true, function(val)
         ConfigState.PlayerESP = val
         ConfigState.ESP = val
-        if not val then
+        if not val and not ConfigState.ESP3DBox then
             clearESP()
         end
     end, {
@@ -10808,12 +11695,23 @@ end)
 --------------------------------------------------------------------------------
 do
 local ReplicatedStorage = State.ReplicatedStorage or safeGetService("ReplicatedStorage")
+local safeClamp = State.safeClamp
+local getSoccerModules = State.getSoccerModules
 local getLocalSoccerCharacter = State.getLocalSoccerCharacter
+local getAllSoccerCharacters = State.getAllSoccerCharacters
+local getMyTeamName = State.getMyTeamName
+local getCharacterTeamName = State.getCharacterTeamName
 local getPrimarySoccerBall = State.getPrimarySoccerBall
 local getAllGoalInfos = State.getAllGoalInfos
 local computeRedirectedGoalTarget = State.computeRedirectedGoalTarget
 local computeAutoCurveValue = State.computeAutoCurveValue
+local buildAimStructure = State.buildAimStructure
+local getMaxKickChargeSeconds = State.getMaxKickChargeSeconds
+local getSmoothedServerTime = State.getSmoothedServerTime
 local transformKickActionPayload = State.transformKickActionPayload
+local installSoccerActionModuleHooks = State.installSoccerActionModuleHooks
+local installStaminaAndMovementGuardHooks = State.installStaminaAndMovementGuardHooks
+local installAntiRagdollAndKnockbackHooks = State.installAntiRagdollAndKnockbackHooks
 local applyBallHitbox = State.applyBallHitbox
 local applyTackleHitbox = State.applyTackleHitbox
 local applyBallSkinChanger = State.applyBallSkinChanger
@@ -10908,8 +11806,9 @@ do
     local gkDiveCooldown = 0
     local hitboxSyncCooldown = 0
     local skinSyncCooldown = 0
-    local sprintContinuousTimer = 0
-    local sprintMicroPulseRemaining = 0
+    local hookWatchdogCooldown = 0
+    local staminaPulseTimer = 0
+    local staminaPulseRecoverFrame = false
     local prevBallPos = nil
     local prevBallVel = Vector3.zero
 
@@ -10923,6 +11822,20 @@ do
         gkDiveCooldown = math.max(0, gkDiveCooldown - dt)
         hitboxSyncCooldown = hitboxSyncCooldown + dt
         skinSyncCooldown = skinSyncCooldown + dt
+        hookWatchdogCooldown = hookWatchdogCooldown + dt
+
+        if hookWatchdogCooldown >= 1.0 then
+            hookWatchdogCooldown = 0
+            if ConfigState.ShootRedirection or ConfigState.AutoCurve then
+                installSoccerActionModuleHooks()
+            end
+            if ConfigState.InfiniteStamina or ConfigState.BypassKickoffFreeze then
+                installStaminaAndMovementGuardHooks()
+            end
+            if ConfigState.AntiRagdoll or ConfigState.AntiKnockback or ConfigState.AntiStun then
+                installAntiRagdollAndKnockbackHooks()
+            end
+        end
 
         local char = getLocalSoccerCharacter()
         if not char then
@@ -10940,21 +11853,21 @@ do
             if ConfigState.TackleHitbox then applyTackleHitbox() end
         end
 
-        if skinSyncCooldown >= 0.8 then
+        if skinSyncCooldown >= 0.75 then
             skinSyncCooldown = 0
             if ConfigState.BallSkinsEnabled then applyBallSkinChanger() end
             if ConfigState.JerseySkinsEnabled then applyJerseySkinChanger() end
             if ConfigState.ItemSkinsEnabled then applyItemSkinChanger() end
         end
 
-        -- 1. Ball Velocity & Curve Acceleration Estimator
+        -- 1. Ball Velocity & Curve Acceleration Estimator (Supports both AssemblyLinearVelocity and CFrame-Interpolated ClientBall_MainMatch)
         local ball = getPrimarySoccerBall(myHRP and myHRP.Position or nil)
         if ball then
             local curPos = ball.Position
             local rawVel = ball.AssemblyLinearVelocity or ball.Velocity or Vector3.zero
             if prevBallPos and dt > 0.001 then
                 local measuredVel = (curPos - prevBallPos) / dt
-                if rawVel.Magnitude < 0.1 and measuredVel.Magnitude > 0.1 then
+                if rawVel.Magnitude < 1.0 and measuredVel.Magnitude > 0.5 and measuredVel.Magnitude < 600 then
                     rawVel = measuredVel
                 end
             end
@@ -10963,13 +11876,23 @@ do
             prevBallPos = curPos
             prevBallVel = rawVel
 
+            -- If Ball Hitbox is expanded and LocalPlayer is within the expanded radius, trigger touch interest
+            if ConfigState.BallHitbox and myHRP and type(firetouchinterest) == "function" then
+                local hbRadius = safeClamp(tonumber(ConfigState.BallHitboxSize) or 14, 2, 60)
+                if (curPos - myHRP.Position).Magnitude <= hbRadius then
+                    pcall(firetouchinterest, ball, myHRP, 0)
+                    pcall(firetouchinterest, ball, myHRP, 1)
+                end
+            end
+
             -- Apply Physical Shoot Redirection + Auto-Curve Assist when ball is kicked near LocalPlayer
             if myHRP and (ConfigState.ShootRedirection or ConfigState.AutoCurve) then
                 local distToBall = (curPos - myHRP.Position).Magnitude
                 if distToBall <= 18 and rawVel.Magnitude >= 20 then
                     local targetPos, chosenSide = computeRedirectedGoalTarget(curPos, myHRP.CFrame.LookVector, ConfigState.ShootRedirectionMode)
                     if ConfigState.ShootRedirection and targetPos then
-                        local desiredDir = (targetPos - curPos).Unit
+                        local diff = targetPos - curPos
+                        local desiredDir = (diff.Magnitude > 0.01) and diff.Unit or rawVel.Unit
                         local newVel = desiredDir * rawVel.Magnitude
                         pcall(function()
                             ball.AssemblyLinearVelocity = newVel
@@ -10993,13 +11916,43 @@ do
             end
         end
 
-        -- 2. Auto-Bicycle Kick (0 - 150 Studs Slider · Full 3-Phase ActionSession Protocol)
+        -- 2. Auto-Bicycle Kick (0 - 150 Studs Slider · Uses ActionCommands.Kick + ActionSession Protocol)
         if ConfigState.AutoBicycleKick and ball and myHRP and bicycleCooldown <= 0 then
             local dist = (ball.Position - myHRP.Position).Magnitude
             if dist <= (tonumber(ConfigState.BicycleKickDistance) or 25) then
-                bicycleCooldown = 0.45
+                bicycleCooldown = 0.42
                 State.lastBicycleKickAt = os.clock()
                 pcall(function()
+                    local targetPos, side = computeRedirectedGoalTarget(ball.Position, myHRP.CFrame.LookVector, ConfigState.ShootRedirectionMode)
+                    local aimStruct = buildAimStructure(targetPos, ball.Position, true)
+                    local maxCharge = getMaxKickChargeSeconds()
+                    local sTime = getSmoothedServerTime()
+                    local curveVal = ConfigState.AutoCurve and computeAutoCurveValue(side) or nil
+                    local mods = getSoccerModules()
+
+                    -- Method A: Native ActionCommands.Kick (Same as MystrixHub AutoShootController.ShootOnce!)
+                    local firedViaModule = false
+                    if mods.ActionCommands and type(mods.ActionCommands.Kick) == "function" then
+                        local okKick, _ = pcall(function()
+                            return mods.ActionCommands.Kick({
+                                ChargeSeconds = maxCharge,
+                                MaximumChargeSeconds = maxCharge,
+                                PassType = (mods.ActionCommands.PassTypes and mods.ActionCommands.PassTypes.Shot) or "Shot",
+                                AimDirection = aimStruct.AimRay,
+                                KickDirection = aimStruct.KickDirection,
+                                ClientPosition = ball.Position,
+                                UseClientPosition = true,
+                                ShotTime = sTime,
+                                Curve = curveVal,
+                                IsAirborne = true,
+                            })
+                        end)
+                        if okKick then
+                            firedViaModule = true
+                        end
+                    end
+
+                    -- Method B: Direct Remotes.Ball.Kick ActionSession Fallback
                     local remotes = ReplicatedStorage and ReplicatedStorage:FindFirstChild("Remotes")
                     local ballRemotes = remotes and remotes:FindFirstChild("Ball")
                     local kickRemote = ballRemotes and ballRemotes:FindFirstChild("Kick")
@@ -11008,64 +11961,39 @@ do
                         local practiceId = string.gsub(tostring(ball.Name), "^ClientBall_", "")
                         stateRemote:FireServer(practiceId)
                     end
-                    if kickRemote and kickRemote.FireServer then
-                        local targetPos, side = computeRedirectedGoalTarget(myHRP.Position, myHRP.CFrame.LookVector, ConfigState.ShootRedirectionMode)
-                        local aimDir = (targetPos - myHRP.Position).Unit
-                        local flatKickDir = Vector3.new(aimDir.X, 0, aimDir.Z)
-                        if flatKickDir.Magnitude > 0.001 then
-                            flatKickDir = flatKickDir.Unit
-                        else
-                            flatKickDir = aimDir
-                        end
-                        local sessionNow = os.time() + (os.clock() % 1)
+                    if not firedViaModule and kickRemote and kickRemote.FireServer then
                         local sessionId = math.floor((os.clock() * 1000000) % 900000000000) + 100000000000
-                        local curveVal = ConfigState.AutoCurve and computeAutoCurveValue(side) or 0
                         local plrVel = myHRP.AssemblyLinearVelocity or Vector3.zero
-                        local camCF = CFrame.new(myHRP.Position, targetPos)
-
-                        -- Phase 1: Start ActionSession (Airborne Bicycle Kick)
                         kickRemote:FireServer(transformKickActionPayload({
                             Phase = "Start",
                             Protocol = "ActionSession",
                             Command = {
-                                MaximumChargeSeconds = 0.4,
-                                AimDirection = {
-                                    Direction = aimDir,
-                                    Origin = myHRP.Position,
-                                    CameraCFrame = camCF,
-                                    IsAirborne = true,
-                                },
+                                MaximumChargeSeconds = maxCharge,
+                                AimDirection = aimStruct.AimRay,
                                 SessionId = sessionId,
-                                ShotTime = sessionNow,
+                                ShotTime = sTime,
                                 PassType = "Shot",
                                 PlayerVelocity = plrVel,
                                 Kind = "Kick",
-                                KickDirection = flatKickDir,
+                                KickDirection = aimStruct.KickDirection,
                             },
                         }))
-
-                        -- Phase 2: Release ActionSession (Full 0.4s Charge + Curve + Airborne)
                         kickRemote:FireServer(transformKickActionPayload({
                             Phase = "Release",
                             Protocol = "ActionSession",
                             Command = {
-                                MaximumChargeSeconds = 0.4,
-                                AimDirection = {
-                                    Direction = aimDir,
-                                    Origin = myHRP.Position,
-                                    CameraCFrame = camCF,
-                                    IsAirborne = true,
-                                },
-                                ChargeStartedAt = sessionNow,
+                                MaximumChargeSeconds = maxCharge,
+                                AimDirection = aimStruct.AimRay,
+                                ChargeStartedAt = sTime,
                                 SessionId = sessionId,
-                                ShotTime = sessionNow + 0.4,
-                                ChargeSeconds = 0.4,
+                                ShotTime = sTime + maxCharge,
+                                ChargeSeconds = maxCharge,
                                 PassType = "Shot",
-                                Curve = curveVal,
-                                AimLockedAt = sessionNow + 0.28,
+                                Curve = curveVal or 0,
+                                AimLockedAt = sTime + (maxCharge * 0.7),
                                 PlayerVelocity = plrVel,
                                 Kind = "Kick",
-                                KickDirection = flatKickDir,
+                                KickDirection = aimStruct.KickDirection,
                             },
                         }))
                     end
@@ -11073,36 +12001,54 @@ do
             end
         end
 
-        -- 3. Auto-Tackle (Trigger Distance Slider)
+        -- 3. Auto-Tackle (Trigger Distance Slider · Scans workspace.Characters.Players & NPCs)
         if ConfigState.AutoTackle and myHRP and tackleCooldown <= 0 then
             local maxTackleDist = tonumber(ConfigState.AutoTackleDistance) or 18
-            local charsFolder = workspace and workspace:FindFirstChild("Characters")
-            local candidates = charsFolder and charsFolder:GetChildren() or {}
+            local candidates = getAllSoccerCharacters()
+            local myTeam = getMyTeamName()
+            local mods = getSoccerModules()
+            local ownedUserId = nil
+            if mods.Renderer and type(mods.Renderer.GetOwnedUserId) == "function" then
+                local okO, uid = pcall(mods.Renderer.GetOwnedUserId)
+                if okO then ownedUserId = uid end
+            end
+
             local targetOpponent = nil
             local bestDist = maxTackleDist
 
             for _, opp in ipairs(candidates) do
-                if opp ~= char and opp.Name ~= LocalPlayer.Name then
-                    local oppHRP = opp:FindFirstChild("HumanoidRootPart")
-                    if oppHRP then
-                        local d = (oppHRP.Position - myHRP.Position).Magnitude
-                        local hasBall = (opp:GetAttribute("Dribbling") == true)
-                            or (ball and (ball.Position - oppHRP.Position).Magnitude <= 9.5)
-                        if hasBall and d <= bestDist then
-                            bestDist = d
-                            targetOpponent = opp
+                if opp ~= char and opp.Name ~= (LocalPlayer and LocalPlayer.Name) then
+                    local oppTeam = getCharacterTeamName(opp, nil)
+                    local isEnemy = (not myTeam) or (not oppTeam) or (myTeam ~= oppTeam)
+                    if isEnemy then
+                        local oppHRP = opp:FindFirstChild("HumanoidRootPart")
+                        if oppHRP then
+                            local d = (oppHRP.Position - myHRP.Position).Magnitude
+                            local oppUid = opp.GetAttribute and opp:GetAttribute("UserId") or nil
+                            local hasBall = (opp.GetAttribute and opp:GetAttribute("Dribbling") == true)
+                                or (ownedUserId ~= nil and oppUid ~= nil and ownedUserId == oppUid)
+                                or (ball and (ball.Position - oppHRP.Position).Magnitude <= 10.5)
+                            if hasBall and d <= bestDist then
+                                bestDist = d
+                                targetOpponent = opp
+                            end
                         end
                     end
                 end
             end
 
             if targetOpponent then
-                tackleCooldown = 0.45
+                tackleCooldown = 0.42
                 local oppHRP = targetOpponent:FindFirstChild("HumanoidRootPart")
-                local tackleDir = (oppHRP.Position - myHRP.Position).Unit
+                local diff = oppHRP.Position - myHRP.Position
+                local tackleDir = (diff.Magnitude > 0.01) and diff.Unit or myHRP.CFrame.LookVector
                 State.lastAutoTackleTarget = targetOpponent.Name
                 pcall(function()
                     myHRP.CFrame = CFrame.new(myHRP.Position, Vector3.new(oppHRP.Position.X, myHRP.Position.Y, oppHRP.Position.Z))
+                    if type(firetouchinterest) == "function" and ball then
+                        pcall(firetouchinterest, ball, myHRP, 0)
+                        pcall(firetouchinterest, ball, myHRP, 1)
+                    end
                     local remotes = ReplicatedStorage and ReplicatedStorage:FindFirstChild("Remotes")
                     local ballRemotes = remotes and remotes:FindFirstChild("Ball")
                     local tackleRemote = ballRemotes and ballRemotes:FindFirstChild("Tackle")
@@ -11117,12 +12063,17 @@ do
             end
         end
 
-        -- 4. Adaptive Godlike Self-Learning Goalkeeper
+        -- 4. Adaptive Godlike Self-Learning Goalkeeper (With safeClamp so min > max never errors!)
         if ConfigState.AutoGoalkeeper and ball and myHRP then
             local goals = getAllGoalInfos()
+            local myTeam = getMyTeamName()
             local myGoal = nil
             local minGoalDist = math.huge
             for _, g in ipairs(goals) do
+                if myTeam and g.TeamName == myTeam then
+                    myGoal = g
+                    break
+                end
                 local d = (g.Position - myHRP.Position).Magnitude
                 if d < minGoalDist then
                     minGoalDist = d
@@ -11135,7 +12086,6 @@ do
             local bAcc = State.estimatedBallCurveAccel or Vector3.zero
             local prof = State.gkLearnedProfile
 
-            -- Record live incoming shot telemetry for self-learning memory
             if bVel.Magnitude > 18 then
                 prof.LastShotSpeed = bVel.Magnitude
                 prof.LastShotCurveAccel = bAcc.Magnitude
@@ -11150,8 +12100,8 @@ do
                 closingSpeed = (bVel.X * (toGoalVec.X / distBallToGoal)) + (bVel.Z * (toGoalVec.Z / distBallToGoal))
             end
 
-            if closingSpeed > 5 or distBallToGoal <= 42 then
-                local tImpact = (closingSpeed > 5) and math.clamp(distBallToGoal / closingSpeed, 0.02, 1.4) or 0.18
+            if closingSpeed > 5 or distBallToGoal <= 45 then
+                local tImpact = (closingSpeed > 5) and safeClamp(distBallToGoal / closingSpeed, 0.02, 1.4) or 0.18
                 local predictedIntercept = bPos
                     + (bVel * tImpact)
                     + (bAcc * (0.5 * tImpact * tImpact * (prof.CurveMultiplier or 1.22)))
@@ -11161,9 +12111,14 @@ do
                 if offsetFromGoal.Magnitude > maxReach then
                     offsetFromGoal = offsetFromGoal.Unit * maxReach
                 end
+                local guardY = safeClamp(
+                    predictedIntercept.Y * (prof.HighShotElevationBias or 1.15),
+                    math.min(myHRP.Position.Y, goalPos.Y),
+                    math.max(myHRP.Position.Y, goalPos.Y + 14)
+                )
                 local guardPos = Vector3.new(
                     goalPos.X + offsetFromGoal.X,
-                    math.clamp(predictedIntercept.Y * (prof.HighShotElevationBias or 1.15), myHRP.Position.Y, goalPos.Y + 12),
+                    guardY,
                     goalPos.Z + offsetFromGoal.Z * 0.35
                 )
 
@@ -11176,10 +12131,13 @@ do
                 end)
 
                 if tImpact <= (0.28 + (prof.LeadTimeBonus or 0.08)) or (bPos - myHRP.Position).Magnitude <= 16 then
-                    -- Intercept & Clear / Catch the ball!
                     pcall(function()
+                        if type(firetouchinterest) == "function" then
+                            pcall(firetouchinterest, ball, myHRP, 0)
+                            pcall(firetouchinterest, ball, myHRP, 1)
+                        end
                         ball.CFrame = myHRP.CFrame * CFrame.new(0, 0, -2.2)
-                        local clearDir = -toGoalVec.Unit
+                        local clearDir = (toGoalVec.Magnitude > 0.01) and (-toGoalVec.Unit) or myHRP.CFrame.LookVector
                         ball.AssemblyLinearVelocity = clearDir * 95 + Vector3.new(0, 28, 0)
                         ball.Velocity = ball.AssemblyLinearVelocity
                     end)
@@ -11210,6 +12168,12 @@ do
                     myHum.Sit = false
                     if myHum.SetStateEnabled and Enum.HumanoidStateType.Ragdoll then
                         myHum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+                    end
+                    if myHum.GetState and myHum.ChangeState then
+                        local st = myHum:GetState()
+                        if st == Enum.HumanoidStateType.Ragdoll or st == Enum.HumanoidStateType.FallingDown then
+                            myHum:ChangeState(Enum.HumanoidStateType.GettingUp)
+                        end
                     end
                 end
             end)
@@ -11244,7 +12208,7 @@ do
                 local maxAllowedHoriz = 38
                 local horizMag = math.sqrt(curVel.X * curVel.X + curVel.Z * curVel.Z)
                 if horizMag > maxAllowedHoriz or (moveDir.Magnitude < 0.05 and horizMag > 16) then
-                    local clamped = Vector3.new(moveDir.X * 24, math.clamp(curVel.Y, -50, 50), moveDir.Z * 24)
+                    local clamped = Vector3.new(moveDir.X * 24, safeClamp(curVel.Y, -50, 50), moveDir.Z * 24)
                     myHRP.AssemblyLinearVelocity = clamped
                     myHRP.Velocity = clamped
                     State.lastKnockbackSuppressedAt = os.clock()
@@ -11252,12 +12216,16 @@ do
             end)
         end
 
-        -- 6. Misc Section 2: Ball Magnet, Bypass Kickoff Freeze, Infinite Stamina (Anti-Rubberband)
+        -- 6. Misc Section 2: Ball Magnet, Bypass Kickoff Freeze, Infinite Stamina (Zero-Rubberband Module Hooks + Attribute Sync)
         if ConfigState.BallMagnet and ball and myHRP then
             local d = (ball.Position - myHRP.Position).Magnitude
-            if d <= 32 then
+            if d <= 35 then
                 local magnetPos = myHRP.Position + (myHRP.CFrame.LookVector * 2.4)
                 pcall(function()
+                    if type(firetouchinterest) == "function" then
+                        pcall(firetouchinterest, ball, myHRP, 0)
+                        pcall(firetouchinterest, ball, myHRP, 1)
+                    end
                     ball.CFrame = CFrame.new(magnetPos)
                     ball.AssemblyLinearVelocity = myHRP.AssemblyLinearVelocity or Vector3.zero
                     ball.Velocity = ball.AssemblyLinearVelocity
@@ -11268,6 +12236,9 @@ do
         if ConfigState.BypassKickoffFreeze then
             pcall(function()
                 char:SetAttribute("KickoffFrozen", false)
+                if myHRP and myHRP.Anchored then
+                    myHRP.Anchored = false
+                end
                 for _, desc in ipairs(char:GetDescendants()) do
                     if desc:IsA("Configuration") and desc.Name == "NoLocomotion" then
                         local synced = desc:FindFirstChild("SyncedState")
@@ -11282,27 +12253,31 @@ do
             end)
         end
 
-        -- 3-Layer Anti-Rubberband Infinite Stamina Bypass
+        -- Infinite Stamina (Backed by Sprint.GetDrainAmount/GetSpendAmount = 0, BallHitStamina.GetCost = 0, LocalMovementGuard.Validate = true, + 0.38s Server Micro-Pulse)
         if ConfigState.InfiniteStamina then
-            sprintContinuousTimer = sprintContinuousTimer + dt
-            -- Layer 1: Micro-pulse @SprintIsSprinting every 0.38s for 1 frame (~16ms) to reset server's shadow drain timer via ServerCooldownGrace
-            if sprintContinuousTimer >= 0.38 then
-                sprintContinuousTimer = 0
-                sprintMicroPulseRemaining = 0.018
-                State.staminaMicroPulseCount = (State.staminaMicroPulseCount or 0) + 1
-            end
-
+            staminaPulseTimer = staminaPulseTimer + dt
             pcall(function()
-                if sprintMicroPulseRemaining > 0 then
-                    sprintMicroPulseRemaining = sprintMicroPulseRemaining - dt
+                if staminaPulseRecoverFrame then
+                    staminaPulseRecoverFrame = false
+                    char:SetAttribute("SprintIsSprinting", true)
+                    char:SetAttribute("SprintDodgeBoostUntil", os.clock() + 1.5)
+                    if myHum and myHum.MoveDirection and myHum.MoveDirection.Magnitude > 0.01 then
+                        myHum:Move(myHum.MoveDirection, false)
+                    end
+                elseif staminaPulseTimer >= 0.36 then
+                    staminaPulseTimer = 0
+                    staminaPulseRecoverFrame = true
+                    State.staminaMicroPulseCount = (State.staminaMicroPulseCount or 0) + 1
                     char:SetAttribute("SprintIsSprinting", false)
+                    char:SetAttribute("SprintDodgeBoostUntil", os.clock() + 1.5)
+                    if myHum and myHum.MoveDirection and myHum.MoveDirection.Magnitude > 0.01 then
+                        myHum:Move(myHum.MoveDirection, false)
+                    end
                 else
                     char:SetAttribute("SprintIsSprinting", true)
+                    char:SetAttribute("SprintDodgeBoostUntil", os.clock() + 1.5)
                 end
-                -- Layer 2: Momentum Bridge via @SprintDodgeBoostUntil & Configuration SpeedMultiplier
-                char:SetAttribute("SprintDodgeBoostUntil", os.clock() + 1.5)
                 char:SetAttribute("Stamina", 100)
-                -- Layer 3: Keep PlayerGui.Stamina bar at 100%
                 local pGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
                 local stamGui = pGui and pGui:FindFirstChild("Stamina")
                 if stamGui then
@@ -11314,8 +12289,8 @@ do
                 end
             end)
         else
-            sprintContinuousTimer = 0
-            sprintMicroPulseRemaining = 0
+            staminaPulseTimer = 0
+            staminaPulseRecoverFrame = false
         end
     end)
 end
